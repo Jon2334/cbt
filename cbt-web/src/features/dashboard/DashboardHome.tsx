@@ -38,12 +38,11 @@ export default function DashboardHome() {
           supabase.from('exams').select('id', { count: 'exact', head: true }),
           supabase
             .from('results')
-            .select('id', { count: 'exact', head: true })
-            .in('status', ['graded', 'released']),
+            .select('id', { count: 'exact', head: true }),
           supabase
             .from('results')
-            .select('id,exam_id,student_id,score,status,is_released,graded_at,created_at')
-            .order('created_at', { ascending: false })
+            .select('id,attempt_id,student_id,exam_id,score,graded_at,is_published')
+            .order('graded_at', { ascending: false })
             .limit(5),
         ]);
 
@@ -138,7 +137,7 @@ export default function DashboardHome() {
                   <td>{r.exam_id?.slice(0, 8)}…</td>
                   <td>{r.student_id?.slice(0, 8)}…</td>
                   <td>{r.score ?? '—'}</td>
-                  <td>{r.status}</td>
+                  <td>{r.is_published ? 'Dipublikasikan' : 'Belum dipublikasikan'}</td>
                 </tr>
               ))}
             </tbody>

@@ -11,11 +11,16 @@
 -- ============================================================================
 -- Helper: Mendapatkan profil pengguna saat ini (role, id)
 -- ============================================================================
+-- KEAMANAN: fungsi ini HANYA mengembalikan profil PEMANGGIL (WHERE id = auth.uid()).
+-- Kebijakan RLS `student_own_profile` sudah mengizinkan setiap peran terautentikasi
+-- membaca baris profilnya sendiri, sehingga fungsi tidak perlu SECURITY DEFINER.
+-- Dijadikan SECURITY INVOKER untuk mengurangi permukaan serangan (tidak ada
+-- eskalasi priviles; tetap tunduk RLE/RLS pemanggil).
 CREATE OR REPLACE FUNCTION get_current_profile()
 RETURNS profiles
 LANGUAGE sql
 STABLE
-SECURITY DEFINER
+SECURITY INVOKER
 AS $$
   SELECT * FROM profiles WHERE id = auth.uid();
 $$;

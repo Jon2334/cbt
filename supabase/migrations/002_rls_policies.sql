@@ -195,13 +195,24 @@ CREATE POLICY teacher_questions_owned_or_subject ON questions
     )
   );
 
--- Siswa dapat membaca soal untuk referensi (tanpa kunci jawaban)
+-- Siswa dapat Membaca soal referensi HANYA untuk mata pelajaran yang
+-- diajarkan di kelas tempat mereka terdaftar. Hal ini mencegah siswa kelas A
+-- membaca soal (atau opsi) milik kelas lain.
+-- Kunci jawaban tetap terlindungi oleh policy student_no_access_question_correct_answers
 CREATE POLICY student_questions_for_reference ON questions
   FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM profiles p
       WHERE p.id = auth.uid() AND p.role = 'student'
+    )
+    AND subject_id IN (
+      SELECT ta.subject_id
+      FROM teacher_assignments ta
+      JOIN class_members cm
+        ON cm.class_id = ta.class_id
+       WHERE cm.student_id = auth.uid()
+         AND ta.subject_id IS NOT NULL
     )
   );
 
@@ -236,7 +247,11 @@ CREATE POLICY teacher_question_options_assigned ON question_options
     )
   );
 
--- Siswa hanya dapat membaca opsi yang terkait dengan soal yang dapat mereka akses
+-- Siswa hanya dapat membaca opsi jawaban untuk soal yang dapat mereka akses
+-- (soal pada mata pelajaran yang diajarkan di kelas tempat mereka terdaftar).
+-- Diperbaiki: join sebelumnya memakai class_members.class_id sebagai subject_id
+-- (kolom salah) sehingga restriksi kelas tidak berlaku; sekarang memakai
+-- subject_id yang diajarkan melalui teacher_assignments + class_members.
 CREATE POLICY student_question_options_visible ON question_options
   FOR SELECT TO authenticated
   USING (
@@ -247,18 +262,14 @@ CREATE POLICY student_question_options_visible ON question_options
     AND EXISTS (
       SELECT 1 FROM questions q
       WHERE q.id = question_options.question_id
-      AND (
-        q.subject_id IN (
-          SELECT class_members.class_id FROM class_members
-          WHERE student_id = auth.uid()
+        AND q.subject_id IN (
+          SELECT ta.subject_id
+          FROM teacher_assignments ta
+          JOIN class_members cm
+            ON cm.class_id = ta.class_id
+          WHERE cm.student_id = auth.uid()
+            AND ta.subject_id IS NOT NULL
         )
-        OR q.created_by IN (
-          SELECT teacher_id FROM teacher_assignments
-          WHERE teacher_id IS NOT NULL AND class_id IN (
-            SELECT class_id FROM class_members WHERE student_id = auth.uid()
-          )
-        )
-      )
     )
   );
 

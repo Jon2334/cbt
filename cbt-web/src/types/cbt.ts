@@ -4,29 +4,40 @@
  * secrets and are safe to use in the frontend. Only non-sensitive columns are
  * typed here; answer keys live in `question_correct_answers` and are never
  * exposed to the client (protected by RLS + SECURITY DEFINER functions).
+ *
+ * Kolom ditarik langsung dari migrasi 001 (`profiles`, `classes`, `subjects`,
+ * `teacher_assignments`, `questions`, `question_options`, `exams`, `results`)
+ * dan tidak dibiarkan "menebak" kolom yang tidak ada.
  */
-
-export type UserRole = 'student' | 'teacher' | 'admin';
+import type { UserRole } from '../lib/role';
 
 export interface Profile {
   id: string;
-  email: string;
-  full_name: string | null;
-  role: 'student' | 'teacher' | 'admin';
-  avatar_url: string | null;
+  full_name: string;
+  role: UserRole;
+  email: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Subject {
   id: string;
   name: string;
-  description: string | null;
+  code: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ClassRecord {
   id: string;
   name: string;
-  year: string | null;
-  subject_id: string | null;
+  grade_level: string | null;
+  academic_year: string;
+  is_archived: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface TeacherAssignment {
@@ -34,6 +45,26 @@ export interface TeacherAssignment {
   teacher_id: string;
   class_id: string | null;
   subject_id: string | null;
+  created_at: string;
+}
+
+export interface QuestionOption {
+  id: string;
+  question_id: string;
+  option_text: string;
+  option_order: number;
+  created_at: string;
+}
+
+export interface Question {
+  id: string;
+  subject_id: string;
+  topic: string | null;
+  question_text: string;
+  weight: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export type ExamStatus = 'draft' | 'published' | 'archived';
@@ -43,35 +74,49 @@ export interface Exam {
   title: string;
   description: string | null;
   subject_id: string;
-  class_id: string | null;
-  schedule_start: string | null;
-  schedule_end: string | null;
-  duration_minutes: number | null;
+  class_id: string; // NOT NULL di skema 001 (bukan nullable)
+  created_by: string;
+  open_at: string;
+  close_at: string;
+  duration_minutes: number;
+  max_attempts: number;
   shuffle_questions: boolean;
   shuffle_options: boolean;
-  max_attempts: number;
+  show_results_after: boolean;
   status: ExamStatus;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface Question {
-  id: string;
-  subject_id: string;
-  topic: string | null;
-  type: string | null; // 'multiple_choice_single' on MVP
-  text: string;
-  difficulty: number | null;
-  is_active: boolean;
-  created_by: string;
-}
-
-export type ResultStatus = 'pending' | 'graded' | 'released';
-
-export interface Result {
+export interface ExamAttempt {
   id: string;
   exam_id: string;
   student_id: string;
-  score: number | null;
-  graded_at: string | null;
-  status: ResultStatus;
-  is_released: boolean;
+  started_at: string;
+  submitted_at: string | null;
+  status: 'in_progress' | 'submitted' | 'timed_out' | 'graded';
+  time_spent_seconds: number;
+  attempt_number: number;
+}
+
+export interface Answer {
+  id: string;
+  attempt_id: string;
+  question_id: string;
+  option_id: string | null;
+  answered_at: string;
+  updated_at: string;
+}
+
+export interface Result {
+  id: string;
+  attempt_id: string;
+  student_id: string;
+  exam_id: string;
+  score: number; // NOT NULL di skema (0–100)
+  max_score: number;
+  total_questions: number;
+  correct_answers: number;
+  graded_at: string;
+  is_published: boolean;
 }
