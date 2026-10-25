@@ -88,6 +88,19 @@ export interface Exam {
   updated_at: string;
 }
 
+/**
+ * Hubungan ujian ke soal (tabel `exam_questions`).
+ * Kolom ini di-mirror dari migrasi 001; `weight_override` nullable = gunakan
+ * bobot dari questions.weight. `question_order` menjaga urutan soal.
+ */
+export interface ExamQuestion {
+  id: string;
+  exam_id: string;
+  question_id: string;
+  question_order: number;
+  weight_override: number | null;
+}
+
 export interface ExamAttempt {
   id: string;
   exam_id: string;

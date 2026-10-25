@@ -462,11 +462,12 @@ CREATE POLICY teacher_exam_attempts ON exam_attempts
     )
   );
 
--- Siswa hanya dapat melihat attempt mereka sendiri
+-- Siswa hanya dapat MELIHAT attempt mereka sendiri (SELECT).
+-- Mutasi (start/submit) dilakukan lewat fungsi SECURITY DEFINER
+-- fn_start_exam_attempt / fn_submit_exam, bukan langsung oleh siswa.
 CREATE POLICY student_own_exam_attempts ON exam_attempts
-  FOR ALL TO authenticated
-  USING (student_id = auth.uid())
-  WITH CHECK (student_id = auth.uid());
+  FOR SELECT TO authenticated
+  USING (student_id = auth.uid());
 
 -- ============================================================================
 -- answers
@@ -506,11 +507,47 @@ CREATE POLICY teacher_answers ON answers
     )
   );
 
--- Siswa hanya dapat mengelola jawaban untuk attempt mereka sendiri
+-- Siswa dapat MELIHAT semua jawaban attempt miliknya (baca tak terkunci
+-- status agar nilai akhir masih bisa ditinjau). Penulisan (INSERT/UPDATE/
+-- DELETE) HANYA saat attempt masih 'in_progress' — mencegah siswa mengubah
+-- jawaban setelah ujian selesai / sudah dinilai. Mutasi kanonik tetap lewat
+-- fn_save_answer (SECURITY DEFINER), yang melewati RLS dan memvalidasi status.
 CREATE POLICY student_own_answers ON answers
-  FOR ALL TO authenticated
-  USING (attempt_id IN (SELECT id FROM exam_attempts WHERE student_id = auth.uid()))
-  WITH CHECK (attempt_id IN (SELECT id FROM exam_attempts WHERE student_id = auth.uid()));
+  FOR SELECT TO authenticated
+  USING (attempt_id IN (SELECT id FROM exam_attempts WHERE student_id = auth.uid()));
+
+CREATE POLICY student_own_answers_insert ON answers
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    attempt_id IN (
+      SELECT id FROM exam_attempts
+      WHERE student_id = auth.uid() AND status = 'in_progress'
+    )
+  );
+
+CREATE POLICY student_own_answers_update ON answers
+  FOR UPDATE TO authenticated
+  USING (
+    attempt_id IN (
+      SELECT id FROM exam_attempts
+      WHERE student_id = auth.uid() AND status = 'in_progress'
+    )
+  )
+  WITH CHECK (
+    attempt_id IN (
+      SELECT id FROM exam_attempts
+      WHERE student_id = auth.uid() AND status = 'in_progress'
+    )
+  );
+
+CREATE POLICY student_own_answers_delete ON answers
+  FOR DELETE TO authenticated
+  USING (
+    attempt_id IN (
+      SELECT id FROM exam_attempts
+      WHERE student_id = auth.uid() AND status = 'in_progress'
+    )
+  );
 
 -- ============================================================================
 -- results
@@ -624,11 +661,11 @@ COMMENT ON POLICY student_exam_questions_visible ON exam_questions IS 'Siswa: ex
 
 COMMENT ON POLICY admin_exam_attempts_all ON exam_attempts IS 'Admin: izin CRUD semua attempt ujian.';
 COMMENT ON POLICY teacher_exam_attempts ON exam_attempts IS 'Guru: melihat attempt siswa yang dia ajarkan.';
-COMMENT ON POLICY student_own_exam_attempts ON exam_attempts IS 'Siswa: lihat/buat attempt sendiri (RLS enforcing ownership).';
+COMMENT ON POLICY student_own_exam_attempts ON exam_attempts IS 'Siswa: MELIHAT attempt sendiri (SELECT saja); mutasi via fungsi DEFINER.';
 
 COMMENT ON POLICY admin_answers_all ON answers IS 'Admin: izin CRUD semua jawaban.';
 COMMENT ON POLICY teacher_answers ON answers IS 'Guru: membaca jawaban siswa yang dia ajarkan.';
-COMMENT ON POLICY student_own_answers ON answers IS 'Siswa: mengelola jawaban untuk attempt mereka sendiri.';
+COMMENT ON POLICY student_own_answers ON answers IS 'Siswa: BACA jawaban attempt sendiri (SELECT); tulis hanya saat in_progress.';
 
 COMMENT ON POLICY admin_results_all ON results IS 'Admin: izin CRUD semua hasil.';
 COMMENT ON POLICY teacher_results ON results IS 'Guru: membaca hasil siswa yang dia ajarkan.';

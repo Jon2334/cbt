@@ -12,6 +12,12 @@ import { useAuth } from './lib/auth';
 import { canManageUsers, hasRole } from './lib/role';
 import LoginPage from './features/auth/LoginPage';
 import DashboardHome from './features/dashboard/DashboardHome';
+import ExamsPage from './features/dashboard/exams/ExamsPage';
+import ExamForm from './features/dashboard/exams/ExamForm';
+import ExamQuestions from './features/dashboard/exams/ExamQuestions';
+import ExamResults from './features/dashboard/exams/ExamResults';
+import QuestionsPage from './features/dashboard/questions/QuestionsPage';
+import QuestionForm from './features/dashboard/questions/QuestionForm';
 import './App.css';
 
 function PublicRoute({ children }: { children: ReactNode }) {
@@ -93,9 +99,15 @@ function App() {
         <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
         <Route path="/dashboard" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
         <Route path="/" element={<RequireAuth><ProtectedLayout><Navigate to="/dashboard" replace /></ProtectedLayout></RequireAuth>} />
-        <Route path="/exams" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
-        <Route path="/questions" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
-        <Route path="/results" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
+        <Route path="/exams" element={<RequireAuth><ProtectedLayout><ExamsPage /></ProtectedLayout></RequireAuth>} />
+        <Route path="/exams/new" element={<RequireAuth><ProtectedLayout><ExamForm /></ProtectedLayout></RequireAuth>} />
+        <Route path="/exams/:id/edit" element={<RequireAuth><ProtectedLayout><ExamForm /></ProtectedLayout></RequireAuth>} />
+        <Route path="/exams/:id/questions" element={<RequireAuth><ProtectedLayout><ExamQuestions /></ProtectedLayout></RequireAuth>} />
+        <Route path="/exams/:id/results" element={<RequireAuth><ProtectedLayout><ExamResults /></ProtectedLayout></RequireAuth>} />
+        <Route path="/questions" element={<RequireAuth><ProtectedLayout><QuestionsPage /></ProtectedLayout></RequireAuth>} />
+        <Route path="/questions/new" element={<RequireAuth><ProtectedLayout><QuestionForm /></ProtectedLayout></RequireAuth>} />
+        <Route path="/questions/:id/edit" element={<RequireAuth><ProtectedLayout><QuestionForm /></ProtectedLayout></RequireAuth>} />
+        <Route path="/results" element={<RequireAuth><ProtectedLayout><ExamsPage /></ProtectedLayout></RequireAuth>} />
         <Route path="/settings" element={<RequireAuth><ProtectedLayout><Stub /></ProtectedLayout></RequireAuth>} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

@@ -50,7 +50,10 @@ DECLARE
   v_class_member BOOLEAN;
 BEGIN
   -- Validasi siswa dan kepemilikan auth.uid() (mencegah siswa meminta soal orang lain via RPC)
-  IF p_student_id <> auth.uid() THEN
+  -- service_role (cron) melewati guard ini; anon / member biasa wajib cocok auth.uid().
+  -- IS DISTINCT FROM menutup celah NULL-bypass bila auth.uid() bernilai NULL.
+  IF auth.role() <> 'service_role'
+     AND (auth.uid() IS NULL OR p_student_id IS DISTINCT FROM auth.uid()) THEN
     RAISE EXCEPTION 'ID siswa tidak sesuai dengan pengguna terautentikasi.';
   END IF;
   SELECT * INTO v_student_profile FROM profiles WHERE id = p_student_id;
@@ -149,7 +152,10 @@ DECLARE
   v_is_new_attempt BOOLEAN := false;
 BEGIN
   -- Validasi kepemilikan auth.uid() (mencegah siswa memanipulasi attempt orang lain via RPC)
-  IF p_student_id <> auth.uid() THEN
+  -- service_role (cron) melewati guard ini; anon / member biasa wajib cocok auth.uid().
+  -- IS DISTINCT FROM menutup celah NULL-bypass bila auth.uid() bernilai NULL.
+  IF auth.role() <> 'service_role'
+     AND (auth.uid() IS NULL OR p_student_id IS DISTINCT FROM auth.uid()) THEN
     RAISE EXCEPTION 'ID siswa tidak sesuai dengan pengguna terautentikasi.';
   END IF;
 
@@ -359,7 +365,10 @@ DECLARE
   v_new_attempt_id UUID;
 BEGIN
   -- Validasi siswa dan kepemilikan auth.uid() (mencegah siswa meminta soal orang lain via RPC)
-  IF p_student_id <> auth.uid() THEN
+  -- service_role (cron) melewati guard ini; anon / member biasa wajib cocok auth.uid().
+  -- IS DISTINCT FROM menutup celah NULL-bypass bila auth.uid() bernilai NULL.
+  IF auth.role() <> 'service_role'
+     AND (auth.uid() IS NULL OR p_student_id IS DISTINCT FROM auth.uid()) THEN
     RAISE EXCEPTION 'ID siswa tidak sesuai dengan pengguna terautentikasi.';
   END IF;
   SELECT * INTO v_student_profile FROM profiles WHERE id = p_student_id;
@@ -447,14 +456,18 @@ DECLARE
   v_exam_question exam_questions%ROWTYPE;
 BEGIN
   -- Validasi kepemilikan auth.uid() (mencegah siswa memanipulasi attempt orang lain via RPC)
-  IF p_student_id <> auth.uid() THEN
+  -- service_role (cron) melewati guard ini; anon / member biasa wajib cocok auth.uid().
+  -- IS DISTINCT FROM menutup celah NULL-bypass bila auth.uid() bernilai NULL.
+  IF auth.role() <> 'service_role'
+     AND (auth.uid() IS NULL OR p_student_id IS DISTINCT FROM auth.uid()) THEN
     RAISE EXCEPTION 'ID siswa tidak sesuai dengan pengguna terautentikasi.';
   END IF;
 
-  -- Validasi attempt milik siswa
+  -- Validasi attempt milik siswa (FOR UPDATE mencegah race pada save paralel)
   SELECT * INTO v_attempt
   FROM exam_attempts
-  WHERE id = p_attempt_id AND student_id = p_student_id;
+  WHERE id = p_attempt_id AND student_id = p_student_id
+  FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Attempt tidak ditemukan atau tidak dimiliki siswa.';
@@ -699,15 +712,34 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
+DECLARE
+  v_target_id UUID;
+  v_details   JSONB;
 BEGIN
+  -- Identitas baris: NEW untuk INSERT/UPDATE, OLD untuk DELETE.
+  v_target_id := COALESCE(NEW.id, OLD.id);
+
+  IF TG_TABLE_NAME = 'question_correct_answers' THEN
+    -- KEAMANAN: correct_option_id (kunci jawaban) Sengaja tidak dicatat agar
+    -- tidak bocor ke audit_logs.details. Hanya log id, question_id, aksi, waktu.
+    v_details := jsonb_build_object(
+      'id',          COALESCE(NEW.id, OLD.id),
+      'question_id', COALESCE(NEW.question_id, OLD.question_id),
+      'op',          TG_OP,
+      'changed_at',  now()
+    );
+  ELSE
+    -- exams, questions, dll.: catat baris penuh yang tersedia;
+    -- pakai OLD pada DELETE agar target_id tetap teridentifikasi.
+    IF TG_OP = 'DELETE' THEN
+      v_details := to_jsonb(OLD) || jsonb_build_object('op', TG_OP, 'changed_at', now());
+    ELSE
+      v_details := to_jsonb(NEW) || jsonb_build_object('op', TG_OP, 'changed_at', now());
+    END IF;
+  END IF;
+
   INSERT INTO audit_logs (user_id, action, target_type, target_id, details)
-  VALUES (
-    auth.uid(),
-    TG_OP || '_' || TG_TABLE_NAME,
-    TG_TABLE_NAME,
-    NEW.id,
-    to_jsonb(NEW)
-  );
+  VALUES (auth.uid(), TG_OP || '_' || TG_TABLE_NAME, TG_TABLE_NAME, v_target_id, v_details);
   RETURN NEW;
 END;
 $$;
@@ -724,3 +756,32 @@ CREATE TRIGGER trg_questions_audit
 CREATE TRIGGER trg_question_correct_answers_audit
   AFTER INSERT OR UPDATE OR DELETE ON question_correct_answers
   FOR EACH ROW EXECUTE FUNCTION log_exam_changes();
+
+-- ============================================================================
+-- Hak eksekusi eksplisit (defense-in-depth).
+-- Default Postgres memberi EXECUTE ke PUBLIC; REVOKE mengembalikan ke 'no access'
+-- agar anon tidak dapat memanggil RPC sensitif. Hanya role yang dipilih yang di-GRANT.
+--
+-- PERLUS DI-VERIVIKASI di Neon/PostgreSQL target: apakah role `service_role`
+-- tersedia sebagai PostgreSQL role yang dapat ditarget GRANT (Supabase memakai
+-- role service_role via JWT, bukan necessarily sebagai PostgreSQL role biasa).
+-- Jika GRANT TO service_role gagal, gunakan job owner cron / patch guard.
+-- ============================================================================
+REVOKE ALL ON FUNCTION get_current_profile() FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_get_student_exam_questions(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_submit_exam(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_auto_submit_expired_exams() FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_start_exam_attempt(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_save_answer(UUID, UUID, UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_calculate_exam_score(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_publish_results(UUID, BOOLEAN) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION get_current_profile() TO authenticated;
+GRANT EXECUTE ON FUNCTION fn_get_student_exam_questions(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION fn_submit_exam(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION fn_auto_submit_expired_exams() TO service_role;
+GRANT EXECUTE ON FUNCTION fn_submit_exam(UUID, UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION fn_start_exam_attempt(UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION fn_save_answer(UUID, UUID, UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION fn_calculate_exam_score(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION fn_publish_results(UUID, BOOLEAN) TO authenticated;

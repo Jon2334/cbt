@@ -13,7 +13,7 @@ module.exports = ({ config }) => ({
   ],
   extra: {
     eas: {
-      projectId: process.env.EAS_PROJECT_ID
+      projectId: process.env.EAS_PROJECT_ID || '8d8aa813-d2ab-4da4-bf89-7e75dad2ae1f'
     }
   }
 });
