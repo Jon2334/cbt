@@ -1,0 +1,41 @@
+# Catch-all for entire CBT monorepo.
+# Per-project .gitignore (cbt-web, cbt-android) override/specify further.
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+build/
+.expo/
+web-build/
+
+# Native generated (handled per-project as well)
+/android
+/ios
+/expoSplashScreen*
+
+# Environment files — NEVER commit real credentials
+# .env.example is tracked; ALL other .env* files are ignored project-wide.
+.env
+.env.*
+.env.*.local
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Debug logs
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Editor dirs
+.vscode/
+.idea/
+
+# Cache
+.cache/
