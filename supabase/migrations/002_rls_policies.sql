@@ -287,7 +287,12 @@ CREATE POLICY admin_question_correct_answers_all ON question_correct_answers
     )
   );
 
--- Guru dapat mengelola kunci jawaban untuk soal yang mereka ajarkan
+-- Guru dapat mengelola kunci jawaban untuk soal yang mereka buat atau yang
+-- mata pelajarannya diajarkan. Diperbaiki: cabang q.created_by sebelumnya tidak
+-- memfilter teacher_id = auth.uid(), sehingga cakupan akses ke seluruh guru
+-- yang mengajarkan mapel (terlalu leluasa). Sekarang membandingkan
+-- q.created_by = auth.uid() agar guru hanya mengelola kunci jawaban soal yang
+-- mereka sendiri buat, atau soal pada mata pelajaran yang diajarkan oleh guru.
 CREATE POLICY teacher_question_correct_answers_assigned ON question_correct_answers
   FOR ALL TO authenticated
   USING (
@@ -295,10 +300,7 @@ CREATE POLICY teacher_question_correct_answers_assigned ON question_correct_answ
       SELECT 1 FROM questions q
       WHERE q.id = question_correct_answers.question_id
       AND (
-        q.created_by IN (
-          SELECT teacher_id FROM teacher_assignments
-          WHERE teacher_id IS NOT NULL AND (subject_id = q.subject_id OR class_id IS NOT NULL)
-        )
+        q.created_by = auth.uid()
         OR q.subject_id IN (
           SELECT subject_id FROM teacher_assignments
           WHERE teacher_id = auth.uid() AND subject_id IS NOT NULL
@@ -480,7 +482,10 @@ CREATE POLICY admin_answers_all ON answers
     )
   );
 
--- Guru dapat membaca jawaban siswa yang dia ajarkan
+-- Guru dapat membaca jawaban siswa yang diajarkan (hanya attempt milik siswa
+-- di kelas yang diajar guru). Diperbaiki: join sebelumnya membandingkan
+-- answers.attempt_id dengan exam_attempts.student_id (selalu salah), sehingga
+-- guru tidak pernah melihat jawaban siswa. Sekarang memakai ea.id = attempt_id.
 CREATE POLICY teacher_answers ON answers
   FOR SELECT TO authenticated
   USING (
@@ -488,16 +493,14 @@ CREATE POLICY teacher_answers ON answers
       SELECT 1 FROM profiles p
       WHERE p.id = auth.uid() AND p.role = 'teacher'
     )
-    AND (
-      attempt_id IN (
-        SELECT id FROM exam_attempts ea
-        WHERE ea.student_id = answers.attempt_id
-        AND ea.student_id IN (
-          SELECT student_id FROM class_members
-          WHERE class_id IN (
-            SELECT class_id FROM teacher_assignments
-            WHERE teacher_id = auth.uid() AND class_id IS NOT NULL
-          )
+    AND attempt_id IN (
+      SELECT ea.id FROM exam_attempts ea
+      WHERE ea.student_id IN (
+        SELECT cm.student_id
+        FROM class_members cm
+        WHERE cm.class_id IN (
+          SELECT ta.class_id FROM teacher_assignments ta
+          WHERE ta.teacher_id = auth.uid() AND ta.class_id IS NOT NULL
         )
       )
     )
@@ -580,57 +583,57 @@ CREATE POLICY no_access_audit_logs ON audit_logs
   FOR SELECT TO authenticated USING (false);
 
 -- RLS diaktifkan, semua kebijakan diterapkan di atas.
-COMMENT ON POLICY admin_profiles_all IS 'Admin: izin CRUD semua profil.';
-COMMENT ON POLICY teacher_students_profiles IS 'Guru: melihat profil siswa yang dia ajarkan.';
-COMMENT ON POLICY student_own_profile IS 'Siswa: melihat profil sendiri.';
+COMMENT ON POLICY admin_profiles_all ON profiles IS 'Admin: izin CRUD semua profil.';
+COMMENT ON POLICY teacher_students_profiles ON profiles IS 'Guru: melihat profil siswa yang dia ajarkan.';
+COMMENT ON POLICY student_own_profile ON profiles IS 'Siswa: melihat profil sendiri.';
 
-COMMENT ON POLICY admin_classes_all IS 'Admin: izin CRUD semua kelas.';
-COMMENT ON POLICY teacher_classes_assigned IS 'Guru: melihat kelas yang dia ajarkan.';
-COMMENT ON POLICY student_classes_membership IS 'Siswa: melihat kelas tempat mereka terdaftar.';
+COMMENT ON POLICY admin_classes_all ON classes IS 'Admin: izin CRUD semua kelas.';
+COMMENT ON POLICY teacher_classes_assigned ON classes IS 'Guru: melihat kelas yang dia ajarkan.';
+COMMENT ON POLICY student_classes_membership ON classes IS 'Siswa: melihat kelas tempat mereka terdaftar.';
 
-COMMENT ON POLICY admin_class_members_all IS 'Admin: izin CRUD semua keanggotaan kelas.';
-COMMENT ON POLICY teacher_class_members IS 'Guru: melihat anggota kelas yang dia ajarkan.';
-COMMENT ON POLICY student_own_class_members IS 'Siswa: melihat keanggotaan sendiri.';
+COMMENT ON POLICY admin_class_members_all ON class_members IS 'Admin: izin CRUD semua keanggotaan kelas.';
+COMMENT ON POLICY teacher_class_members ON class_members IS 'Guru: melihat anggota kelas yang dia ajarkan.';
+COMMENT ON POLICY student_own_class_members ON class_members IS 'Siswa: melihat keanggotaan sendiri.';
 
-COMMENT ON POLICY admin_subjects_all IS 'Admin: izin CRUD semua mata pelajaran.';
-COMMENT ON POLICY teacher_subjects_assigned IS 'Guru: melihat mata pelajaran yang dia ajarkan.';
-COMMENT ON POLICY student_subjects_all IS 'Siswa: membaca semua mata pelajaran (referensi).';
+COMMENT ON POLICY admin_subjects_all ON subjects IS 'Admin: izin CRUD semua mata pelajaran.';
+COMMENT ON POLICY teacher_subjects_assigned ON subjects IS 'Guru: melihat mata pelajaran yang dia ajarkan.';
+COMMENT ON POLICY student_subjects_all ON subjects IS 'Siswa: membaca semua mata pelajaran (referensi).';
 
-COMMENT ON POLICY admin_teacher_assignments_all IS 'Admin: izin CRUD semua penugasan guru.';
-COMMENT ON POLICY teacher_own_assignments IS 'Guru: melihat tugas sendiri.';
+COMMENT ON POLICY admin_teacher_assignments_all ON teacher_assignments IS 'Admin: izin CRUD semua penugasan guru.';
+COMMENT ON POLICY teacher_own_assignments ON teacher_assignments IS 'Guru: melihat tugas sendiri.';
 
-COMMENT ON POLICY admin_questions_all IS 'Admin: izin CRUD semua soal.';
-COMMENT ON POLICY teacher_questions_owned_or_subject IS 'Guru: soal yang mereka buat atau yang diajarkan.';
-COMMENT ON POLICY student_questions_for_reference IS 'Siswa: membaca soal untuk referensi (tanpa kunci jawaban).';
+COMMENT ON POLICY admin_questions_all ON questions IS 'Admin: izin CRUD semua soal.';
+COMMENT ON POLICY teacher_questions_owned_or_subject ON questions IS 'Guru: soal yang mereka buat atau yang diajarkan.';
+COMMENT ON POLICY student_questions_for_reference ON questions IS 'Siswa: membaca soal untuk referensi (tanpa kunci jawaban).';
 
-COMMENT ON POLICY admin_question_options_all IS 'Admin: izin CRUD semua opsi jawaban.';
-COMMENT ON POLICY teacher_question_options_assigned IS 'Guru: mengelola opsi untuk soal yang diajarkan.';
-COMMENT ON POLICY student_question_options_visible IS 'Siswa: membaca opsi yang terkait dengan soal yang dapat mereka akses.';
+COMMENT ON POLICY admin_question_options_all ON question_options IS 'Admin: izin CRUD semua opsi jawaban.';
+COMMENT ON POLICY teacher_question_options_assigned ON question_options IS 'Guru: mengelola opsi untuk soal yang diajarkan.';
+COMMENT ON POLICY student_question_options_visible ON question_options IS 'Siswa: membaca opsi yang terkait dengan soal yang dapat mereka akses.';
 
-COMMENT ON POLICY admin_question_correct_answers_all IS 'Admin: izin CRUD kunci jawaban.';
-COMMENT ON POLICY teacher_question_correct_answers_assigned IS 'Guru: mengelola kunci jawaban untuk soal yang diajarkan.';
-COMMENT ON POLICY student_no_access_question_correct_answers IS 'Siswa: tidak dapat membaca kunci jawaban (terlindungi).';
+COMMENT ON POLICY admin_question_correct_answers_all ON question_correct_answers IS 'Admin: izin CRUD kunci jawaban.';
+COMMENT ON POLICY teacher_question_correct_answers_assigned ON question_correct_answers IS 'Guru: mengelola kunci jawaban untuk soal yang diajarkan.';
+COMMENT ON POLICY student_no_access_question_correct_answers ON question_correct_answers IS 'Siswa: tidak dapat membaca kunci jawaban (terlindungi).';
 
-COMMENT ON POLICY admin_exams_all IS 'Admin: izin CRUD semua ujian.';
-COMMENT ON POLICY teacher_exams_owned_or_assigned IS 'Guru: ujian yang mereka buat atau yang diajarkan.';
-COMMENT ON POLICY student_exams_visible IS 'Siswa: melihat ujian yang diterbitkan dan untuk kelas mereka, dalam jendela waktu yang valid.';
+COMMENT ON POLICY admin_exams_all ON exams IS 'Admin: izin CRUD semua ujian.';
+COMMENT ON POLICY teacher_exams_owned_or_assigned ON exams IS 'Guru: ujian yang mereka buat atau yang diajarkan.';
+COMMENT ON POLICY student_exams_visible ON exams IS 'Siswa: melihat ujian yang diterbitkan dan untuk kelas mereka, dalam jendela waktu yang valid.';
 
-COMMENT ON POLICY admin_exam_questions_all IS 'Admin: izin CRUD semua exam_questions.';
-COMMENT ON POLICY teacher_exam_questions_assigned IS 'Guru: exam_questions terkait dengan ujian yang dapat mereka akses.';
-COMMENT ON POLICY student_exam_questions_visible IS 'Siswa: exam_questions untuk ujian yang dapat mereka akses (dalam jendela waktu).';
+COMMENT ON POLICY admin_exam_questions_all ON exam_questions IS 'Admin: izin CRUD semua exam_questions.';
+COMMENT ON POLICY teacher_exam_questions_assigned ON exam_questions IS 'Guru: exam_questions terkait dengan ujian yang dapat mereka akses.';
+COMMENT ON POLICY student_exam_questions_visible ON exam_questions IS 'Siswa: exam_questions untuk ujian yang dapat mereka akses (dalam jendela waktu).';
 
-COMMENT ON POLICY admin_exam_attempts_all IS 'Admin: izin CRUD semua attempt ujian.';
-COMMENT ON POLICY teacher_exam_attempts IS 'Guru: melihat attempt siswa yang dia ajarkan.';
-COMMENT ON POLICY student_own_exam_attempts IS 'Siswa: lihat/buat attempt sendiri (RLS enforcing ownership).';
+COMMENT ON POLICY admin_exam_attempts_all ON exam_attempts IS 'Admin: izin CRUD semua attempt ujian.';
+COMMENT ON POLICY teacher_exam_attempts ON exam_attempts IS 'Guru: melihat attempt siswa yang dia ajarkan.';
+COMMENT ON POLICY student_own_exam_attempts ON exam_attempts IS 'Siswa: lihat/buat attempt sendiri (RLS enforcing ownership).';
 
-COMMENT ON POLICY admin_answers_all IS 'Admin: izin CRUD semua jawaban.';
-COMMENT ON POLICY teacher_answers IS 'Guru: membaca jawaban siswa yang dia ajarkan.';
-COMMENT ON POLICY student_own_answers IS 'Siswa: mengelola jawaban untuk attempt mereka sendiri.';
+COMMENT ON POLICY admin_answers_all ON answers IS 'Admin: izin CRUD semua jawaban.';
+COMMENT ON POLICY teacher_answers ON answers IS 'Guru: membaca jawaban siswa yang dia ajarkan.';
+COMMENT ON POLICY student_own_answers ON answers IS 'Siswa: mengelola jawaban untuk attempt mereka sendiri.';
 
-COMMENT ON POLICY admin_results_all IS 'Admin: izin CRUD semua hasil.';
-COMMENT ON POLICY teacher_results IS 'Guru: membaca hasil siswa yang dia ajarkan.';
-COMMENT ON POLICY student_own_results IS 'Siswa: membaca hasil mereka sendiri hanya jika sudah dipublikasikan.';
+COMMENT ON POLICY admin_results_all ON results IS 'Admin: izin CRUD semua hasil.';
+COMMENT ON POLICY teacher_results ON results IS 'Guru: membaca hasil siswa yang dia ajarkan.';
+COMMENT ON POLICY student_own_results ON results IS 'Siswa: membaca hasil mereka sendiri hanya jika sudah dipublikasikan.';
 
-COMMENT ON POLICY admin_audit_logs_all IS 'Admin: membaca semua log audit.';
-COMMENT ON POLICY admin_audit_logs_insert IS 'Hanya admin yang dapat memasukkan log audit.';
-COMMENT ON POLICY no_access_audit_logs IS 'Semua peran selain admin tidak dapat membaca audit_logs.';
+COMMENT ON POLICY admin_audit_logs_all ON audit_logs IS 'Admin: membaca semua log audit.';
+COMMENT ON POLICY admin_audit_logs_insert ON audit_logs IS 'Hanya admin yang dapat memasukkan log audit.';
+COMMENT ON POLICY no_access_audit_logs ON audit_logs IS 'Semua peran selain admin tidak dapat membaca audit_logs.';
