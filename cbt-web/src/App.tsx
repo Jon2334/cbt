@@ -1,81 +1,87 @@
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  NavLink,
+  useNavigate,
+} from 'react-router-dom';
+import { LogOut } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { useAuth } from './lib/auth';
+import { canManageUsers, hasRole } from './lib/role';
+import LoginPage from './features/auth/LoginPage';
+import DashboardHome from './features/dashboard/DashboardHome';
 import './App.css';
 
-// --- Pages ---
-function DashboardHome() {
-  return (
-    <div className="dashboard-home">
-      <div className="stat-card">
-        <h3>Total Ujian</h3>
-        <p className="stat-value">0</p>
-      </div>
-      <div className="stat-card">
-        <h3>Siswa Aktif</h3>
-        <p className="stat-value">0</p>
-      </div>
-      <div className="stat-card">
-        <h3>Kelas Terdaftar</h3>
-        <p className="stat-value">0</p>
-      </div>
-    </div>
-  );
+function PublicRoute({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <Loading />;
+  return user ? <Navigate to="/dashboard" replace /> : children;
 }
 
-function ExamsPage() {
-  return (
-    <div>
-      <h2>Kelola Ujian</h2>
-      <p>Buat, edit, dan jadwalkan ujian CBT.</p>
-      <button className="primary-btn">Buat Ujian Baru</button>
-    </div>
-  );
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { user, role, loading } = useAuth();
+  if (loading) return <Loading />;
+  if (!user)
+    return <Navigate to="/login" replace state={{ from: '/dashboard' }} />;
+  if (!hasRole(role, 'teacher'))
+    return <Navigate to="/login" replace state={{ from: '/dashboard' }} />;
+  return <>{children}</>;
 }
 
-function QuestionsPage() {
-  return (
-    <div>
-      <h2>Bank Soal</h2>
-      <p>Kelola pertanyaan dan jawaban untuk setiap mata pelajaran.</p>
-    </div>
-  );
+function Loading() {
+  return <div className="loading">Memuat…</div>;
 }
 
-function ResultsPage() {
-  return (
-    <div>
-      <h2>Hasil Ujian</h2>
-      <p>Lihat rekap nilai dan statistik peserta ujian.</p>
-    </div>
-  );
-}
+function ProtectedLayout({ children }: { children: ReactNode }) {
+  const { profile, role, signOut } = useAuth();
+  const navigate = useNavigate();
 
-function SettingsPage() {
-  return (
-    <div>
-      <h2>Pengaturan</h2>
-      <p>Kelola data sekolah, guru, dan konfigurasi sistem.</p>
-    </div>
-  );
-}
+  const handleLogout = async () => {
+    await signOut();
+    navigate('/login', { replace: true });
+  };
 
-// --- Layout ---
-function Layout({ children }: { children: React.ReactNode }) {
+  const linkClass = ({ isActive }: { isActive: boolean }) =>
+    isActive ? 'nav-link active' : 'nav-link';
+
   return (
     <div className="app-layout">
       <header className="app-header">
         <div className="logo">CBT Dashboard</div>
         <nav>
-          <NavLink to="/" className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>Beranda</NavLink>
-          <NavLink to="/exams" className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>Ujian</NavLink>
-          <NavLink to="/questions" className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>Bank Soal</NavLink>
-          <NavLink to="/results" className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>Hasil</NavLink>
-          <NavLink to="/settings" className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>Pengaturan</NavLink>
+          <NavLink to="/dashboard" className={linkClass}>Beranda</NavLink>
+          <NavLink to="/exams" className={linkClass}>Ujian</NavLink>
+          <NavLink to="/questions" className={linkClass}>Bank Soal</NavLink>
+          <NavLink to="/results" className={linkClass}>Hasil</NavLink>
+          {canManageUsers(role) && (
+            <NavLink to="/settings" className={linkClass}>Pengaturan</NavLink>
+          )}
         </nav>
+        <div className="user-menu">
+          <span className="user-name">
+            {profile?.full_name || profile?.email || 'Akun'}
+          </span>
+          <span className="role-badge">{role}</span>
+          <button className="ghost-btn" onClick={handleLogout} aria-label="Keluar">
+            <LogOut size={16} />
+          </button>
+        </div>
       </header>
       <main className="app-main">{children}</main>
       <footer className="app-footer">
-        <p>CBT Web Dashboard v1.0.0 — Fondasi Proyek</p>
+        <p>CBT Web Dashboard — Dashboard Guru</p>
       </footer>
+    </div>
+  );
+}
+
+function Stub() {
+  return (
+    <div>
+      <h2>Berhasil masuk</h2>
+      <p>Halaman ini akan dikembangkan selanjutnya.</p>
     </div>
   );
 }
@@ -83,15 +89,16 @@ function Layout({ children }: { children: React.ReactNode }) {
 function App() {
   return (
     <BrowserRouter>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<DashboardHome />} />
-          <Route path="/exams" element={<ExamsPage />} />
-          <Route path="/questions" element={<QuestionsPage />} />
-          <Route path="/results" element={<ResultsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </Layout>
+      <Routes>
+        <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+        <Route path="/dashboard" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
+        <Route path="/" element={<RequireAuth><ProtectedLayout><Navigate to="/dashboard" replace /></ProtectedLayout></RequireAuth>} />
+        <Route path="/exams" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
+        <Route path="/questions" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
+        <Route path="/results" element={<RequireAuth><ProtectedLayout><DashboardHome /></ProtectedLayout></RequireAuth>} />
+        <Route path="/settings" element={<RequireAuth><ProtectedLayout><Stub /></ProtectedLayout></RequireAuth>} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
     </BrowserRouter>
   );
 }
