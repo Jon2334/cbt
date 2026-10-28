@@ -5,6 +5,7 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
       "node": "22.18.0",
       "android": {
         "buildType": "apk"
