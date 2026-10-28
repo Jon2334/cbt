@@ -355,3 +355,38 @@ p {
   font-size: 12px;
   text-align: center;
 }
+
+/* ------------------------------------------------------------------------- */
+/* Recovery screen shown by RequireAuth when the session is valid but the     */
+/* profile/role could not be loaded (RLS fix pending).                         */
+/* ------------------------------------------------------------------------- */
+.auth-recovery-screen {
+  max-width: 440px;
+  margin: 72px auto;
+  padding: 32px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.auth-recovery-screen h2 {
+  margin-bottom: 12px;
+}
+
+.ghost-btn {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s;
+}
+
+.ghost-btn:hover {
+  background: var(--primary-light);
+  color: var(--primary);
+}

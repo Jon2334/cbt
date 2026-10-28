@@ -18,6 +18,8 @@ export interface AuthState {
   role: UserRole;
   /** True until the initial session/ profile has been resolved on load. */
   loading: boolean;
+  /** Recoverable auth error surfaced when the profile cannot be loaded. */
+  authError: string | null;
 }
 
 export interface AuthActions {
@@ -50,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const fetchProfile = useCallback(
     async (uid: string) => {
@@ -59,9 +62,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .eq('id', uid)
         .single();
       if (error) {
+        // Do NOT wipe a previously-resolved profile on a transient refresh
+        // failure: keeping the last-known role avoids dropping role to null,
+        // which previously caused a dashboard <-> login redirect loop.
+        // Callers inspect the null return to decide how to react.
         // eslint-disable-next-line no-console
         console.error('Failed to load profile', error.message);
-        setProfile(null);
         return null;
       }
       setProfile(data as Profile);
@@ -70,15 +76,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  // Hydrate the initial session from storage.
+  // Hydrate the initial session from storage and resolve the profile BEFORE
+  // reporting the initial load complete. Previously setLoading(false) fired
+  // while fetchProfile was still in flight, so role was null + loading was
+  // false -> RequireAuth bounced to /login while PublicRoute bounced back to
+  // /dashboard -> "Maximum update depth exceeded".
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!active) return;
-      setSession(session);
+      setSession(session ?? null);
       setUser(session?.user ?? null);
-      if (session?.user) void fetchProfile(session.user.id);
-      setLoading(false);
+      if (!session?.user) {
+        if (active) setLoading(false);
+        return;
+      }
+      const resolved = await fetchProfile(session.user.id);
+      if (!active) return;
+      if (!resolved) {
+        // The role lives in `profiles` (RLS-protected, never trusted from the
+        // token). Without it we cannot authorize. Surface a RECOVERABLE error
+        // and finish loading so the route guard can render a sign-out screen.
+        // We deliberately do NOT auto signOut() here: that would trigger the
+        // SIGNED_OUT event in onAuthStateChange, which clears authError and
+        // races this set — hiding the message the user needs to recover.
+        setAuthError(
+          'Profil pengguna tidak dapat dimuat. Silakan masuk kembali.'
+        );
+      }
+      if (active) setLoading(false);
     });
     return () => {
       active = false;
@@ -90,12 +116,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+      setSession(session ?? null);
       setUser(session?.user ?? null);
       if (session?.user) {
+        setAuthError(null);
         void fetchProfile(session.user.id);
       } else {
         setProfile(null);
+        setAuthError(null);
       }
     });
     return () => subscription.unsubscribe();
@@ -103,6 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (email: string, password: string) => {
+      setAuthError(null);
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -110,10 +139,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (error) {
         return { ok: false, error: error.message };
       }
-      // Ensure the profile (and therefore the role) is resolved before
-      // navigating away from the login page.
+      // Resolve the profile (role) before the caller navigates away, so the
+      // dashboard guard never renders with role=null. A failed profile load
+      // here is a hard failure at login -> report it instead of navigating.
       if (data.user) {
-        await fetchProfile(data.user.id);
+        const resolved = await fetchProfile(data.user.id);
+        if (!resolved) {
+          return {
+            ok: false,
+            error: 'Profil pengguna tidak dapat dimuat. Coba masuk kembali.',
+          };
+        }
       }
       return { ok: true };
     },
@@ -125,6 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
     setUser(null);
     setProfile(null);
+    setAuthError(null);
   }, []);
 
   const value: AuthContextValue = {
@@ -133,6 +170,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     profile,
     role: (profile?.role ?? null) as UserRole,
     loading,
+    authError,
     signIn,
     signOut,
   };

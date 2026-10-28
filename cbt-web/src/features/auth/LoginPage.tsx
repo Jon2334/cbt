@@ -8,7 +8,7 @@ import { Eye, EyeOff, LogIn } from 'lucide-react';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, authError } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -49,9 +49,12 @@ export default function LoginPage() {
           </div>
           <h1>Login Guru</h1>
           <p>Silakan masuk untuk mengelola ujian dan melihat hasil siswa.</p>
-        </div>
+          </div>
 
-        {error && <div className="login-error" role="alert">{error}</div>}
+          {authError && (
+          <div className="login-error" role="alert">{authError}</div>
+          )}
+          {error && <div className="login-error" role="alert">{error}</div>}
 
         <div className="form-field">
           <label htmlFor="email">Email</label>

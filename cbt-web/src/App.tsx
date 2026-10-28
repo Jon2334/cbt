@@ -27,10 +27,27 @@ function PublicRoute({ children }: { children: ReactNode }) {
 }
 
 function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, role, loading } = useAuth();
+  const { user, role, loading, authError, signOut } = useAuth();
   if (loading) return <Loading />;
   if (!user)
     return <Navigate to="/login" replace state={{ from: '/dashboard' }} />;
+  // Authenticated but the profile (role) could not be loaded. Redirecting to
+  // /login would bounce back here via PublicRoute (user is set) -> an infinite
+  // /login <-> /dashboard loop, so render a recoverable sign-out screen instead.
+  if (!role) {
+    return (
+      <div className="auth-recovery-screen">
+        <h2>Profil tidak dapat dimuat</h2>
+        <p>
+          {authError ||
+            'Profil pengguna Anda tidak dapat dimuat. Silakan masuk kembali.'}
+        </p>
+        <button className="ghost-btn" onClick={() => signOut()}>
+          Kembali ke login
+        </button>
+      </div>
+    );
+  }
   if (!hasRole(role, 'teacher'))
     return <Navigate to="/login" replace state={{ from: '/dashboard' }} />;
   return <>{children}</>;
