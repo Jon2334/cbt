@@ -23,18 +23,25 @@ export default function ResultsScreen() {
     if (!profile) return;
     setLoading(true);
     setError(null);
-    const res = await fetchAllPublishedResults(profile);
-    if (res.error) {
-      setError('Gagal memuat hasil ujian.');
+    try {
+      const res = await fetchAllPublishedResults(profile);
+      if (res.error) {
+        setError('Gagal memuat hasil ujian.');
+        setData([]);
+      } else {
+        setData(res.data);
+      }
+    } catch (e) {
+      // Fetch yang melempar exception tidak boleh membuat spinner berputar terus.
+      setError(e instanceof Error ? `Gagal memuat hasil ujian: ${e.message}` : 'Gagal memuat hasil ujian.');
       setData([]);
-    } else {
-      setData(res.data);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [profile]);
 
   useEffect(() => {
-    if (profile) load();
+    if (profile) void load();
   }, [profile, load]);
 
   if (!ready) {

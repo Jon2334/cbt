@@ -24,23 +24,32 @@ export default function ResultScreen() {
     if (!ready || !attemptId) return;
     let cancelled = false;
     void (async () => {
-      setLoading(true);
-      setError(null);
-      const res = await fetchPublishedResult(attemptId);
-      if (res.error) {
-        setError(friendlyError(res.error));
-        setResult(null);
-        setExam(null);
-        setLoading(false);
-        return;
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await fetchPublishedResult(attemptId);
+        if (cancelled) return;
+        if (res.error) {
+          setError(friendlyError(res.error));
+          setResult(null);
+          setExam(null);
+          return;
+        }
+        setResult(res.data);
+        if (res.data?.exam_id) {
+          const e = await fetchExam(res.data.exam_id);
+          if (!cancelled) setExam(e.data);
+        }
+      } catch (e) {
+        // Tanpa catch, exception di sini meninggalkan layar di spinner selamanya.
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Gagal memuat hasil ujian.');
+          setResult(null);
+          setExam(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      if (cancelled) return;
-      setResult(res.data);
-      if (res.data?.exam_id) {
-        const e = await fetchExam(res.data.exam_id);
-        if (!cancelled) setExam(e.data);
-      }
-      if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
   }, [ready, attemptId]);

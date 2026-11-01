@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, StyleSheet, View, ViewStyle } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../lib/auth';
@@ -15,22 +15,54 @@ export default function ExamsListScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Guard setState setelah unmount + pembuangan hasil fetch yang sudah usang
+  // (mis. pull-to-refresh ganda) supaya tidak menimpa data terbaru.
+  const mounted = useRef(true);
+  const reqSeq = useRef(0);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const load = useCallback(async () => {
     if (!profile) return;
+    const seq = ++reqSeq.current;
     setLoading(true);
     setError(null);
-    const res = await listExamsWithStatus(profile);
-    if (res.error) {
-      setError('Gagal memuat daftar ujian.');
-    } else {
-      setData(res.data);
+    try {
+      const res = await listExamsWithStatus(profile);
+      if (!mounted.current || seq !== reqSeq.current) return;
+      if (res.error) {
+        setError('Gagal memuat daftar ujian.');
+        setData([]);
+      } else {
+        setData(res.data);
+      }
+    } catch (e) {
+      // Exception tak terduga (mis. fetch gagal total) tidak boleh membuat
+      // spinner berputar selamanya / promise rejection tanpa penangan.
+      if (!mounted.current || seq !== reqSeq.current) return;
+      setError(e instanceof Error ? `Gagal memuat daftar ujian: ${e.message}` : 'Gagal memuat daftar ujian.');
+      setData([]);
+    } finally {
+      if (mounted.current && seq === reqSeq.current) setLoading(false);
     }
-    setLoading(false);
   }, [profile]);
+
+  // WAJIB di dalam useEffect. Memanggil load() di badan render akan membuat
+  // render-phase update (setLoading/setError sinkron) → React loop sampai
+  // melempar "Too many re-renders" → aplikasi langsung tertutup setelah login.
+  useEffect(() => {
+    if (!ready || !profile) return;
+    void load();
+  }, [ready, profile, load]);
 
   const onRefresh = useCallback(() => {
     // Force reload session & exams.
-    load();
+    void load();
   }, [load]);
 
   if (!ready) {
@@ -50,10 +82,6 @@ export default function ExamsListScreen() {
         </View>
       </Screen>
     );
-  }
-
-  if (data === null && loading) {
-    load();
   }
 
   const render = ({ item }: { item: ExamWithStatus }) => (

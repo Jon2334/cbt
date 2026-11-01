@@ -74,6 +74,13 @@ export function useExamPlayer(
 
   const [currentIdx, setCurrentIdx] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Deadline absolut (ms) dihitung SEKALI saat attempt siap; sisa waktu selalu
+  // dihitung ulang dari Date.now() sehingga efek timer tidak perlu dibuat ulang
+  // tiap detik (bug lama: deps memuat state.timeLeft → interval di-reset 1x/detik).
+  const deadlineRef = useRef<number | null>(null);
+  // Jalur auto-submit saat waktu habis, disimpan di ref supaya efek timer tetap
+  // punya dependensi pendek.
+  const autoSubmitRef = useRef<(() => Promise<void>) | null>(null);
   // Bungkus submit supaya tak bisa dipanggil ganda.
   const submitLock = useRef(false);
 
@@ -85,6 +92,10 @@ export function useExamPlayer(
 
   // ---- inisialisasi: exam + attempt (start or resume) ----
   const init = useCallback(async () => {
+    // Profil belum termuat → jangan panggil RPC apa pun. Server akan menolak
+    // (ID siswa tidak valid) dan pengguna hanya melihat error yang menyesatkan.
+    if (!studentId) return;
+    deadlineRef.current = null;
     setState((s) => ({ ...s, phase: 'loading', error: null, networkError: false }));
     try {
       const examRes = await fetchExam(examId);
@@ -134,7 +145,9 @@ export function useExamPlayer(
       if (!ansRes.error) answers = ansRes.data;
 
       const startedAt = new Date(attempt.started_at).getTime();
-      const remaining = Math.max(0, exam.duration_minutes * 60 - Math.floor((Date.now() - startedAt) / 1000));
+      const deadline = startedAt + exam.duration_minutes * 60 * 1000;
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      deadlineRef.current = deadline;
 
       setState((s) => ({ ...s, phase: 'ready', exam, attempt, questions, answers, timeLeft: remaining }));
     } catch (e) {
@@ -147,50 +160,37 @@ export function useExamPlayer(
     }
   }, [examId, studentId, attemptId]);
 
-  // lazy import suporte rpc start
-  const fetchStart = async (id: string, sid: string) => {
-    // import di sini agar hook tetap self-contained.
-    const mod = await import('./exams');
-    const startRes = await mod.startExam(id, sid);
-    return startRes;
-  };
-  const getAttemptById = async (id: string) => {
-    const mod = await import('./exams');
-    return mod.getAttemptById(id);
-  };
-
   useEffect(() => {
-    init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void init();
     return clearTimer;
   }, [init, clearTimer]);
 
   // ---- timer ----
+  // Sisa waktu dihitung ulang dari deadline absolut, sehingga efek ini hanya
+  // berjalan saat attempt benar-benar berganti (bukan tiap detik).
   useEffect(() => {
     if (state.phase !== 'ready') return;
-    const start = Date.now();
-    const target = state.timeLeft;
+    const deadline = deadlineRef.current;
+    if (deadline === null) return;
+
     const tick = () => {
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      const next = target - elapsed;
+      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       if (next <= 0) {
         clearTimer();
-        setState((s) => ({ ...s, timeLeft: 0 }));
-        // Auto-submit saat waktu habis (hindari double submit lewat lock).
-        if (!submitLock.current) {
-          submitLock.current = true;
-          submitExam(state.attempt!.id, studentId).then(() => {
-            submitLock.current = false;
-          });
-        }
+        setState((s) => (s.timeLeft === 0 ? s : { ...s, timeLeft: 0 }));
+        // Auto-submit saat waktu habis. doSubmit men-set phase 'done' → layar
+        // otomatis berpindah ke halaman hasil. (Bug lama: phase tetap 'ready'
+        // sehingga pengguna terjebak di 00:00 tanpa bisa mengumpulkan.)
+        void autoSubmitRef.current?.();
         return;
       }
-      setState((s) => ({ ...s, timeLeft: next }));
+      setState((s) => (s.timeLeft === next ? s : { ...s, timeLeft: next }));
     };
+
     tick();
     timerRef.current = setInterval(tick, 1000);
     return clearTimer;
-  }, [state.phase, state.attempt?.id, studentId, clearTimer, state.timeLeft]);
+  }, [state.phase, state.attempt?.id, clearTimer]);
 
   // ---- pilih opsi ----
   const selectOption = useCallback(
@@ -262,6 +262,12 @@ export function useExamPlayer(
       submitLock.current = false;
     }
   }, [state.attempt, studentId, state.answers, state.questions]);
+
+  // Simpan doSubmit terbaru di ref: efek timer memanggilnya lewat ref supaya
+  // daftar dependensi efek tetap pendek (tidak me-reset interval tiap detik).
+  useEffect(() => {
+    autoSubmitRef.current = doSubmit;
+  }, [doSubmit]);
 
   const goNext = useCallback(() => {
     if (currentIdx < (state.questions.length - 1)) setCurrentIdx(currentIdx + 1);

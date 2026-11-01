@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { useAuth } from '../lib/auth';
 import { AppButton, ErrorBanner, Field, Screen } from '../lib/ui';
 
 export default function SignInScreen() {
   const router = useRouter();
-  const { signIn } = useAuth();
+  const { signIn, ready, hasSession } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -28,6 +28,12 @@ export default function SignInScreen() {
       setFieldError(res.error ?? 'Gagal masuk.');
     }
   };
+
+  // Sesi sudah ada (mis. layar ini dibuka ulang dari riwayat) → langsung ke gate
+  // utama. Semua hook di atas dipanggil sebelum guard ini, jadi urutan hook aman.
+  if (ready && hasSession) {
+    return <Redirect href="/" />;
+  }
 
   return (
     <Screen title="Masuk">

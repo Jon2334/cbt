@@ -26,6 +26,12 @@ type AuthShape = {
   profile: Profile | null;
   /** true setelah sesi awal & profil selesai dimuat (untuk mencegah flash). */
   ready: boolean;
+  /**
+   * true bila ada sesi Supabase aktif — walau profil (RPC) belum selesai dimuat.
+   * Dipakai untuk membedakan "belum login" (→ /sign-in) dari "sudah login tapi
+   * profil masih dimuat" (→ tampilkan loading, JANGAN tendang balik ke /sign-in).
+   */
+  hasSession: boolean;
   /** Peran yang terkonfirmasi; null jika belum ada profile. */
   role: Profile['role'] | null;
   isStudent: boolean;
@@ -43,21 +49,24 @@ const AuthContext = createContext<AuthShape | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [ready, setReady] = useState(false);
+  const [hasSession, setHasSession] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
   // Simpan fetch profile ter-cancel (hindari set state setelah unmount).
   const fetchSeq = useRef(0);
 
-  const loadProfile = useCallback(async () => {
+  // Terapkan sesi yang sudah diketahui → validasi role lewat RPC server-side.
+  // Dipakai BAIK dari getSession (mount/refresh) maupun dari event
+  // onAuthStateChange, sehingga kita tidak perlu memanggil getSession() lagi
+  // di dalam callback auth (pola yang dilarang supabase-js).
+  const applySession = useCallback(async (session: { access_token: string } | null) => {
     const seq = ++fetchSeq.current;
-    const { data, error } = await supabase.auth.getSession();
-    if (error) {
-      setProfile(null);
-      setReady(true);
-      return;
-    }
 
-    const session = data.session;
+    // Ditandai SEBELUM await: event SIGNED_IN datang lebih dulu daripada
+    // selesainya RPC profil, jadi layar tujuan (app/index.tsx) bisa menampilkan
+    // "memuat profil" alih-alih melempar pengguna kembali ke /sign-in.
+    setHasSession(session !== null);
+
     if (!session) {
       setProfile(null);
       setAuthError(null);
@@ -65,25 +74,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       return;
     }
 
-    // Validasi role via RPC server-side (get_current_profile). Ini guard utama.
-    const { data: profileRow, error: rpcErr } = await supabase.rpc('get_current_profile');
-    if (seq !== fetchSeq.current) return;
+    try {
+      // Guard utama: role tak pernah diambil dari auth.user, tapi dari RPC
+      // get_current_profile() (SECURITY INVOKER) yang memvalidasi auth.uid().
+      const { data: profileRow, error: rpcErr } = await supabase.rpc('get_current_profile');
+      if (seq !== fetchSeq.current) return;
 
-    if (rpcErr) {
-      // Contoh: profile belum dibuat, atau koneksi terputus. Tidak dianggap
-      // "student terverifikasi" — set authError agar UI bisa memblok.
+      if (rpcErr) {
+        // Contoh: profil belum dibuat (trigger signup belum jalan) atau
+        // koneksi terputus. Jangan pernah menganggap ini "siswa terverifikasi".
+        setProfile(null);
+        setAuthError(rpcErr.message || 'Gagal memuat profil.');
+        return;
+      }
+
+      // Supabase RPC mengembalikan array karena RETURN TYPE-nya `profiles`.
+      const row: Profile | null = Array.isArray(profileRow)
+        ? ((profileRow[0] as Profile) ?? null)
+        : ((profileRow as Profile) ?? null);
+      setProfile(row);
+      setAuthError(null);
+    } catch (e) {
+      // Exception apa pun (network mati, JSON rusak) harus tetap menutup
+      // status "ready" — kalau tidak, layar mentok di "Memverifikasi sesi...".
+      if (seq !== fetchSeq.current) return;
       setProfile(null);
-      setAuthError(rpcErr.message || 'Gagal memuat profil.');
+      setAuthError(e instanceof Error ? e.message : 'Gagal memuat profil.');
+    } finally {
+      if (seq === fetchSeq.current) setReady(true);
+    }
+  }, []);
+
+  const loadProfile = useCallback(async () => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      setProfile(null);
+      setAuthError(error.message);
       setReady(true);
       return;
     }
-
-    // Supabase RPC mengembalikan array karena RETURN TYPE-nya `profiles`.
-    const row: Profile | null = Array.isArray(profileRow) ? profileRow[0] : (profileRow as Profile);
-    setProfile(row ?? null);
-    setAuthError(null);
-    setReady(true);
-  }, []);
+    await applySession(data.session);
+  }, [applySession]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -121,44 +152,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setProfile(null);
+    setHasSession(false);
     setAuthError(null);
     setReady(true);
   }, []);
 
   // Init + subscribe auth state.
   useEffect(() => {
-    let unsub: (() => void) | undefined;
     let cancelled = false;
 
     // Saat mount: cek sesi tersimpan (persist via AsyncStorage di lib/supabase).
-    loadProfile();
+    void loadProfile();
 
     // supabase-js v2: onAuthStateChange menerima SATU callback dan
     // mengembalikan { data: { subscription } } untuk unsubscribe.
+    // PENTING: callback ini sinkron & dipanggil dari dalam rantai lock auth.
+    // Karena itu kita memakai `session` yang dikirim event, bukan memanggil
+    // supabase.auth.getSession() lagi di dalamnya.
     const { data: authData } = supabase.auth.onAuthStateChange((_evt, session) => {
       if (cancelled) return;
       if (session) {
         // Sesi aktif (termasuk refresh token) → muat profile + role.
-        loadProfile();
+        void applySession(session);
       } else {
         setProfile(null);
+        setHasSession(false);
+        setAuthError(null);
         setReady(true);
       }
     });
-    unsub = () => authData?.subscription?.unsubscribe?.();
 
-    // JALAN: jika API onAuthStateChange hanya menerima callback (tanpa return
-    // unsubscribe), gunakan versi standar.
     return () => {
       cancelled = true;
-      if (unsub) unsub();
+      authData?.subscription?.unsubscribe?.();
     };
-  }, [loadProfile]);
+  }, [loadProfile, applySession]);
 
   const value = useMemo<AuthShape>(
     () => ({
       profile,
       ready,
+      hasSession,
       role: profile?.role ?? null,
       isStudent: profile?.role === 'student',
       authError,
@@ -167,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       signOut,
       refreshProfile: loadProfile,
     }),
-    [profile, ready, authError, signIn, signUp, signOut, loadProfile],
+    [profile, ready, hasSession, authError, signIn, signUp, signOut, loadProfile],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

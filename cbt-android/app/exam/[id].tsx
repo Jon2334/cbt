@@ -27,20 +27,13 @@ export default function ExamPlayerScreen() {
     goToNext,
     goToPrev,
     submit,
-  } = useExamPlayer(examId, profile ? profile.id : '', attemptId);
-
-  // Guard: siswa belum terautentikasi. useAuth mengembalikan ready=true baru
-  // setelah sesi & role selesai dimuat; sampai begitu tunjukkan loading.
-  if (!ready || !profile) {
-    return (
-      <Screen title="Ujian">
-        <Body>Memuat sesi…</Body>
-      </Screen>
-    );
-  }
+  } = useExamPlayer(examId ?? '', profile ? profile.id : '', attemptId);
 
   // Handle submit selesai: navigasi ke halaman result (yang mengecek RLS
   // apakah nilai sudah dipublikasikan).
+  // CATATAN: semua hook WAJIB dipanggil sebelum guard `return` mana pun —
+  // kalau tidak, jumlah hook antar render berbeda ("Rendered more hooks than
+  // during the previous render") dan aplikasi crash saat sesi selesai dimuat.
   useEffect(() => {
     if (phase === 'done' && exam && attempt?.id) {
       const t = setTimeout(() => {
@@ -49,6 +42,16 @@ export default function ExamPlayerScreen() {
       return () => clearTimeout(t);
     }
   }, [phase, exam, attempt?.id, router]);
+
+  // Guard: siswa belum terautentikasi. useAuth mengembalikan ready=true baru
+  // setelah sesi & role selesai dimuat; sampai begitu tunjukkan loading.
+  if (!ready || !profile) {
+    return (
+      <Screen title="Ujian">
+        <Body>Memuat sesi...</Body>
+      </Screen>
+    );
+  }
 
   if (phase === 'error' && !exam) {
     return (
