@@ -1,29 +1,58 @@
 /**
- * Bank soal: guru dapat melihat daftar soal (yang diajarkan) dan mengelola
- * soal pilihan ganda. Read via `questions` (join `subjects`) — RLS
- * `teacher_questions_owned_or_assigned` (FOR SELECT) memastikan guru hanya lihat
- * soal yg diajar/dibuat. Hapus via client — policy `FOR ALL` termasuk DELETE.
+ * Bank Soal (guru & admin).
  *
- * KUNCI JAWABAN tidak pernah dibaca oleh komponen listhismpai — hanya disimpan
- * melalui `question_correct_answers` (hanya teacher/admin, lihat 002 lines 282
- * FOR ALL + 314-320 student denied).
+ * Perubahan UI/UX: pencarian soal, filter mapel bergaya seragam, jumlah opsi
+ * ditampilkan sebagai lencana, dan aksi tiap baris diberi label.
+ *
+ * KUNCI JAWABAN tidak pernah dibaca di halaman ini — hanya disimpan melalui
+ * tabel `question_correct_answers` (hanya teacher/admin) di form soal.
+ * RLS `teacher_questions_owned_or_assigned` (FOR ALL) membatasi data per guru.
  */
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  AlertCircle,
+  BookOpen,
+  CheckCircle2,
+  Edit,
+  FileText,
+  Plus,
+  Search,
+  Trash2,
+} from 'lucide-react';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/auth';
 import { canManageCurriculum } from '../../../lib/role';
-import { Plus, Edit, Trash2, Search } from 'lucide-react';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  LinkButton,
+  LoadingBlock,
+  PageHeader,
+  Select,
+  TableWrap,
+  Td,
+  TextInput,
+  Th,
+} from '../../../components/ui';
 
-interface SubjectOpt { id: string; name: string }
+interface SubjectOpt {
+  id: string;
+  name: string;
+}
+
 interface QRow {
   id: string;
   subject_id: string;
   topic: string | null;
   question_text: string;
+  weight: number;
   created_at: string;
-  subjects: { name: string };
-  question_options: { count: number }[];
+  subjects: { name: string } | null;
+  question_options: { count: number }[] | null;
 }
 
 export default function QuestionsPage() {
@@ -31,13 +60,15 @@ export default function QuestionsPage() {
   const [questions, setQuestions] = useState<QRow[]>([]);
   const [subjects, setSubjects] = useState<SubjectOpt[]>([]);
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const fetchSubjects = useCallback(async () => {
     const { data } = await supabase.from('subjects').select('id,name').order('name');
-    setSubjects(data ?? []);
+    setSubjects((data ?? []) as SubjectOpt[]);
   }, []);
 
   const fetchQuestions = useCallback(async () => {
@@ -50,97 +81,264 @@ export default function QuestionsPage() {
     if (subjectFilter !== 'all') q = q.eq('subject_id', subjectFilter);
     const { data, error: err } = await q;
     if (err) setError(err.message);
-    else setQuestions((data ?? []) as QRow[]);
+    else setQuestions((data ?? []) as unknown as QRow[]);
     setLoading(false);
   }, [subjectFilter]);
 
   useEffect(() => {
-    fetchSubjects();
-    fetchQuestions();
-  }, [fetchSubjects, fetchQuestions]);
+    void fetchSubjects();
+  }, [fetchSubjects]);
+
+  useEffect(() => {
+    void fetchQuestions();
+  }, [fetchQuestions]);
 
   const deleteQuestion = async (q: QRow) => {
-    if (!window.confirm(`Hapus soal "${q.question_text.slice(0, 40)}..."?`)) return;
+    const preview =
+      q.question_text.length > 60
+        ? `${q.question_text.slice(0, 60)}…`
+        : q.question_text;
+    if (!window.confirm(`Hapus soal "${preview}"?\n\nPilihan jawaban dan kunci jawabannya ikut terhapus.`))
+      return;
+
     setDeleting(q.id);
-    // correct answer & options terhapus otomatis (CASCADE)
+    setError(null);
+    // Opsi & kunci jawaban terhapus otomatis (ON DELETE CASCADE).
     const { error: err } = await supabase.from('questions').delete().eq('id', q.id);
     if (err) setError(err.message);
-    else setQuestions((prev) => prev.filter((x) => x.id !== q.id));
+    else {
+      setQuestions((prev) => prev.filter((x) => x.id !== q.id));
+      setNotice('Soal berhasil dihapus.');
+    }
     setDeleting(null);
   };
 
-  if (authLoading) return <div className="loading">Memuat…</div>;
-  if (!canManageCurriculum(role))
-    return <div className="p-6"><h2 className="text-lg font-semibold">Akses ditolak</h2></div>;
+  const visible = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return questions;
+    return questions.filter(
+      (q) =>
+        q.question_text.toLowerCase().includes(needle) ||
+        (q.topic ?? '').toLowerCase().includes(needle)
+    );
+  }, [questions, search]);
+
+  if (authLoading) return <LoadingBlock label="Memeriksa sesi…" />;
+
+  if (!canManageCurriculum(role)) {
+    return (
+      <div className="animate-fade-in-up">
+        <PageHeader
+          icon={FileText}
+          title="Bank Soal"
+          description="Halaman ini untuk guru dan administrator."
+          tone="slate"
+        />
+        <Alert tone="amber" icon={AlertCircle} title="Akses ditolak">
+          Hanya guru/admin yang dapat mengelola bank soal.
+        </Alert>
+        <div className="mt-5">
+          <LinkButton to="/dashboard" variant="secondary" icon={BookOpen}>
+            Kembali ke beranda
+          </LinkButton>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="p-6 space-y-4">
-      <header className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-xl font-bold">Bank Soal</h1>
-          <p className="text-sm text-slate-500">Kelola soal pilihan ganda per mata pelajaran.</p>
+    <div className="animate-fade-in-up">
+      <PageHeader
+        icon={FileText}
+        title="Bank Soal"
+        description="Kumpulan soal pilihan ganda per mata pelajaran, siap dipakai di ujian mana pun."
+        breadcrumb={[{ label: 'Beranda', to: '/dashboard' }, { label: 'Bank Soal' }]}
+        actions={
+          <LinkButton to="/questions/new" icon={Plus}>
+            Soal Baru
+          </LinkButton>
+        }
+      />
+
+      {error && (
+        <Alert tone="red" icon={AlertCircle} title="Terjadi kesalahan" className="mb-4">
+          {error}
+        </Alert>
+      )}
+      {notice && (
+        <Alert
+          tone="green"
+          icon={CheckCircle2}
+          title="Berhasil"
+          onDismiss={() => setNotice(null)}
+          className="mb-4"
+        >
+          {notice}
+        </Alert>
+      )}
+
+      <Card className="mb-4">
+        <div className="flex flex-wrap items-end gap-3 p-4">
+          <div className="min-w-[220px] flex-1">
+            <label className="label" htmlFor="question-search">
+              Cari soal
+            </label>
+            <div className="relative">
+              <Search
+                size={16}
+                className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-slate-400"
+                aria-hidden="true"
+              />
+              <TextInput
+                id="question-search"
+                className="pl-9"
+                placeholder="Teks soal atau topik…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="w-full sm:w-64">
+            <label className="label" htmlFor="question-subject">
+              Mata pelajaran
+            </label>
+            <Select
+              id="question-subject"
+              value={subjectFilter}
+              onChange={(e) => setSubjectFilter(e.target.value)}
+            >
+              <option value="all">Semua mata pelajaran</option>
+              {subjects.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <p className="pb-1 text-xs text-slate-500">
+            {visible.length} soal ditampilkan
+          </p>
         </div>
-        <Link
-          to="/questions/new"
-          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-700"
-        >
-          <Plus size={18} /> Soal Baru
-        </Link>
-      </header>
+      </Card>
 
-      <div className="flex items-center gap-3">
-        <Search size={16} className="text-slate-400" />
-        <select
-          className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
-          value={subjectFilter}
-          onChange={(e) => setSubjectFilter(e.target.value)}
-        >
-          <option value="all">Semua mata pelajaran</option>
-          {subjects.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
-          ))}
-        </select>
-      </div>
+      {subjects.length === 0 && !loading && (
+        <Alert tone="amber" icon={AlertCircle} title="Belum ada mata pelajaran" className="mb-4">
+          Soal wajib terhubung ke mata pelajaran. Minta administrator menambahkannya
+          lebih dulu (menu Pengaturan &amp; Peran → panduan SQL).
+        </Alert>
+      )}
 
-      {error && <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
+      {loading ? (
+        <Card>
+          <LoadingBlock label="Memuat soal…" />
+        </Card>
+      ) : visible.length === 0 ? (
+        <Card className="p-5">
+          <EmptyState
+            icon={FileText}
+            title={
+              questions.length === 0 ? 'Belum ada soal' : 'Tidak ada soal yang cocok'
+            }
+            description={
+              questions.length === 0
+                ? 'Tulis soal sekali di sini, lalu pakai ulang di banyak ujian.'
+                : 'Ubah kata kunci atau ganti filter mata pelajaran.'
+            }
+            actions={
+              questions.length === 0 ? (
+                <LinkButton to="/questions/new" icon={Plus}>
+                  Tulis Soal
+                </LinkButton>
+              ) : (
+                <Button
+                  variant="secondary"
+                  icon={Search}
+                  onClick={() => {
+                    setSearch('');
+                    setSubjectFilter('all');
+                  }}
+                >
+                  Bersihkan filter
+                </Button>
+              )
+            }
+            tips={
+              <ul className="list-disc space-y-1.5 pl-5">
+                <li>Satu soal berisi minimal dua pilihan jawaban.</li>
+                <li>Tandai satu jawaban benar sebagai kunci.</li>
+                <li>Bobot soal menentukan pengaruhnya pada nilai akhir.</li>
+              </ul>
+            }
+          />
+        </Card>
+      ) : (
+        <TableWrap>
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead>
+              <tr>
+                <Th className="w-12">#</Th>
+                <Th>Soal</Th>
+                <Th>Mapel</Th>
+                <Th align="center">Opsi</Th>
+                <Th align="center">Bobot</Th>
+                <Th align="right">Aksi</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {visible.map((q, idx) => (
+                <tr key={q.id} className="hover:bg-slate-50">
+                  <Td className="text-slate-400">{idx + 1}</Td>
+                  <Td className="max-w-xl">
+                    <p className="font-medium text-slate-800">{q.question_text}</p>
+                    {q.topic && (
+                      <p className="mt-1 text-xs text-slate-500">Topik: {q.topic}</p>
+                    )}
+                  </Td>
+                  <Td>
+                    <Badge tone="brand" icon={BookOpen}>
+                      {q.subjects?.name ?? '—'}
+                    </Badge>
+                  </Td>
+                  <Td align="center">
+                    {q.question_options?.[0]?.count ?? 0}
+                  </Td>
+                  <Td align="center">{q.weight ?? 1}</Td>
+                  <Td align="right">
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <LinkButton
+                        to={`/questions/${q.id}/edit`}
+                        variant="secondary"
+                        size="sm"
+                        icon={Edit}
+                      >
+                        Edit
+                      </LinkButton>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={Trash2}
+                        className="text-red-600 hover:bg-red-50"
+                        loading={deleting === q.id}
+                        onClick={() => deleteQuestion(q)}
+                      >
+                        Hapus
+                      </Button>
+                    </div>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableWrap>
+      )}
 
-      {loading ? <div className="loading">Memuat soal…</div> :
-       questions.length === 0 ? (
-         <div className="rounded border border-dashed border-slate-200 p-8 text-center text-slate-500">
-           Belum ada soal. Klik "Soal Baru".
-         </div>
-       ) : (
-         <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-           <table className="w-full text-left text-sm">
-             <thead className="bg-slate-50 text-xs font-medium text-slate-500">
-               <tr>
-                 <th className="p-3">Soal</th>
-                 <th className="p-3">Mapel</th>
-                 <th className="p-3 text-center">Opsi</th>
-                 <th className="p-3">#</th>
-               </tr>
-             </thead>
-             <tbody className="divide-y divide-slate-100">
-               {questions.map((q) => (
-                 <tr key={q.id}>
-                   <td className="p-3">
-                     <div className="font-medium text-slate-800">{q.question_text}</div>
-                     {q.topic && <div className="text-slate-500">{q.topic}</div>}
-                   </td>
-                   <td className="p-3 text-slate-600">{q.subjects?.name}</td>
-                   <td className="p-3 text-center">{q.question_options?.[0]?.count ?? 0}</td>
-                   <td className="p-3">
-                     <div className="flex justify-end gap-1">
-                       <Link to={`/questions/${q.id}/edit`} className="rounded p-1 text-slate-600 hover:bg-slate-100" title="Edit"><Edit size={16} /></Link>
-                       <button onClick={() => deleteQuestion(q)} disabled={deleting === q.id} className="rounded p-1 text-red-500 hover:bg-red-50 disabled:opacity-50" title="Hapus"><Trash2 size={16} /></button>
-                     </div>
-                   </td>
-                 </tr>
-               ))}
-             </tbody>
-           </table>
-         </div>
-       )}
+      <p className="mt-6 text-xs text-slate-400">
+        Siap dipakai?{' '}
+        <Link className="text-brand-600 hover:underline" to="/exams">
+          Buka halaman Ujian
+        </Link>{' '}
+        untuk menyusun soal ke dalam ujian.
+      </p>
     </div>
   );
 }

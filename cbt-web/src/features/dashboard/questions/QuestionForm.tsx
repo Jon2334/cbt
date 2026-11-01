@@ -7,12 +7,41 @@
  * created_by di-set dari session profile (tidak dipercaya dari input).
  * Kunci jawaban disimpan ke tabel terpisah; komponen tidak menampilkannya di
  * list (hanya dipilih saat membuat/editing oleh teacher).
+ *
+ * Perubahan UI/UX: field dikelompokkan (info soal vs pilihan jawaban), tiap
+ * pilihan menampilkan huruf + penanda "Kunci", ada ringkasan "Jawaban benar",
+ * dan tombol hapus hanya muncul bila pilihan > 2.
  */
-import { useEffect, useState, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useState, useCallback, type FormEvent } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/auth';
-import { Save, X, Plus, Trash2 } from 'lucide-react';
+import {
+  AlertCircle,
+  Award,
+  BookOpen,
+  CircleCheck,
+  FileText,
+  Info,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from 'lucide-react';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Field,
+  LinkButton,
+  LoadingBlock,
+  PageHeader,
+  Select,
+  TextInput,
+  Textarea,
+} from '../../../components/ui';
 
 interface OptionRow {
   id?: string;
@@ -28,6 +57,8 @@ interface NewQuestion {
   options: OptionRow[];
   correct_option_order: number; // 1-based order index
 }
+
+const letter = (i: number) => String.fromCharCode(65 + i);
 
 export default function QuestionForm() {
   const { id } = useParams<{ id?: string }>();
@@ -50,6 +81,7 @@ export default function QuestionForm() {
   const [loading, setLoading] = useState(id ? true : false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
 
   const fetchSubjects = useCallback(async () => {
     const { data } = await supabase.from('subjects').select('id,name').order('name');
@@ -64,15 +96,27 @@ export default function QuestionForm() {
       .select('*, question_options(*)')
       .eq('id', id)
       .single();
-    if (err) { setError(err.message); setLoading(false); return; }
+    if (err) {
+      setError(err.message);
+      setLoading(false);
+      return;
+    }
 
-    const q = data as any;
-    const opts: OptionRow[] = (q.question_options ?? []).map((o: any) => ({
+    const q = data as {
+      question_text: string;
+      topic: string | null;
+      subject_id: string;
+      weight: number | null;
+      question_options?: Array<{ id: string; option_text: string }>;
+    };
+    const rawOpts = q.question_options ?? [];
+    const opts: OptionRow[] = rawOpts.map((o) => ({
       id: o.id,
       text: o.option_text,
       is_correct: false,
     }));
-    // load correct answer (teacher-only)
+
+    // Ambil kunci jawaban (khusus teacher/admin) untuk ditandai di form.
     const { data: ca } = await supabase
       .from('question_correct_answers')
       .select('correct_option_id')
@@ -92,12 +136,16 @@ export default function QuestionForm() {
   }, [id]);
 
   useEffect(() => {
-    fetchSubjects();
-    fetchQuestion();
+    void fetchSubjects();
+    void fetchQuestion();
   }, [fetchSubjects, fetchQuestion]);
 
   const setCorrect = (order: number) =>
-    setForm((f) => ({ ...f, correct_option_order: order, options: f.options.map((o, i) => ({ ...o, is_correct: i + 1 === order })) }));
+    setForm((f) => ({
+      ...f,
+      correct_option_order: order,
+      options: f.options.map((o, i) => ({ ...o, is_correct: i + 1 === order })),
+    }));
 
   const addOption = () =>
     setForm((f) => ({ ...f, options: [...f.options, { text: '', is_correct: false }] }));
@@ -114,7 +162,7 @@ export default function QuestionForm() {
             : f.correct_option_order;
       return {
         ...f,
-        options: next,
+        options: next.map((o, i) => ({ ...o, is_correct: i + 1 === newCorrect })),
         correct_option_order: newCorrect,
       };
     });
@@ -130,129 +178,340 @@ export default function QuestionForm() {
     return null;
   };
 
-  const onSubmit = async (e: React.FormEvent) => {
+  const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    setSubmitted(true);
     const v = validate();
-    if (v) { setError(v); return; }
-    if (!profile?.id) { setError('Sesi tidak tersedia.'); return; }
-    setSaving(true); setError(null);
+    if (v) {
+      setError(v);
+      return;
+    }
+    if (!profile?.id) {
+      setError('Sesi tidak tersedia.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
 
     const optsPayload = form.options.map((o, i) => ({
-      question_id: id ?? (undefined as any),
       option_text: o.text.trim(),
       option_order: i + 1,
     }));
 
     let qid = id;
     if (!isEdit) {
-      const { data, error: err } = await supabase.from('questions').insert([{
-        subject_id: form.subject_id,
-        topic: form.topic.trim() || null,
-        question_text: form.question_text.trim(),
-        weight: form.weight,
-        created_by: profile.id,
-      }]).select('id').single();
-      if (err) { setError(err.message); setSaving(false); return; }
+      const { data, error: err } = await supabase
+        .from('questions')
+        .insert([
+          {
+            subject_id: form.subject_id,
+            topic: form.topic.trim() || null,
+            question_text: form.question_text.trim(),
+            weight: form.weight,
+            created_by: profile.id,
+          },
+        ])
+        .select('id')
+        .single();
+      if (err) {
+        setError(err.message);
+        setSaving(false);
+        return;
+      }
       qid = data.id;
     } else {
-      const { error: err } = await supabase.from('questions').update({
-        subject_id: form.subject_id,
-        topic: form.topic.trim() || null,
-        question_text: form.question_text.trim(),
-        weight: form.weight,
-      }).eq('id', qid);
-      if (err) { setError(err.message); setSaving(false); return; }
-      // hapus opsi lama (correct answer ikut cascade delete)
+      const { error: err } = await supabase
+        .from('questions')
+        .update({
+          subject_id: form.subject_id,
+          topic: form.topic.trim() || null,
+          question_text: form.question_text.trim(),
+          weight: form.weight,
+        })
+        .eq('id', qid);
+      if (err) {
+        setError(err.message);
+        setSaving(false);
+        return;
+      }
+      // hapus opsi lama (kunci jawaban ikut terhapus karena ON DELETE CASCADE)
       await supabase.from('question_options').delete().eq('question_id', qid);
     }
 
-    // insert options
+    if (!qid) {
+      setError('ID soal tidak tersedia.');
+      setSaving(false);
+      return;
+    }
+
     const optsWithId = optsPayload.map((o) => ({ ...o, question_id: qid }));
     const { data: insertedOpts, error: errOpts } = await supabase
       .from('question_options')
       .insert(optsWithId)
       .select('id,option_order');
-    if (errOpts) { setError(errOpts.message); setSaving(false); return; }
+    if (errOpts) {
+      setError(errOpts.message);
+      setSaving(false);
+      return;
+    }
 
     // upsert kunci jawaban
     const correctOrder = form.correct_option_order;
-    const correctOpt = insertedOpts?.find((o: any) => o.option_order === correctOrder);
-    if (!correctOpt) { setError('Opsi jawaban benar tidak ditemukan.'); setSaving(false); return; }
-    const { error: errCa } = await supabase.from('question_correct_answers').upsert([{
-      question_id: qid as string,
-      correct_option_id: correctOpt.id,
-    }], { onConflict: 'question_id', ignoreDuplicates: false });
+    const correctOpt = insertedOpts?.find(
+      (o: { option_order: number }) => o.option_order === correctOrder
+    );
+    if (!correctOpt) {
+      setError('Opsi jawaban benar tidak ditemukan.');
+      setSaving(false);
+      return;
+    }
+    const { error: errCa } = await supabase.from('question_correct_answers').upsert(
+      [
+        {
+          question_id: qid,
+          correct_option_id: correctOpt.id,
+        },
+      ],
+      { onConflict: 'question_id', ignoreDuplicates: false }
+    );
     setSaving(false);
     if (errCa) setError(errCa.message);
-    else { alert(isEdit ? 'Soal diperbarui.' : 'Soal dibuat.'); navigate('/questions'); }
+    else navigate('/questions');
   };
 
-  if (loading) return <div className="loading">Memuat…</div>;
+  const showInvalid = (v: boolean) => submitted && v;
+
+  if (loading) {
+    return (
+      <Card>
+        <LoadingBlock label="Memuat soal…" />
+      </Card>
+    );
+  }
+
+  const correctLetter = form.correct_option_order
+    ? letter(form.correct_option_order - 1)
+    : '—';
 
   return (
-    <div className="p-6 max-w-3xl">
-      <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">{isEdit ? 'Edit Soal' : 'Soal Baru'}</h1>
-        <button onClick={() => navigate('/questions')} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1 text-sm hover:bg-slate-50"><X size={16} /> Batal</button>
-      </header>
+    <div className="animate-fade-in-up">
+      <PageHeader
+        icon={FileText}
+        title={isEdit ? 'Edit Soal' : 'Tulis Soal Baru'}
+        description="Soal pilihan ganda dengan satu jawaban benar. Soal ini dapat dipakai di banyak ujian."
+        breadcrumb={[
+          { label: 'Beranda', to: '/dashboard' },
+          { label: 'Bank Soal', to: '/questions' },
+          { label: isEdit ? 'Edit' : 'Baru' },
+        ]}
+        actions={
+          <LinkButton to="/questions" variant="secondary" icon={X}>
+            Batal
+          </LinkButton>
+        }
+      />
 
-      {error && <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
+      {error && (
+        <Alert tone="red" icon={AlertCircle} title="Soal belum bisa disimpan" className="mb-4">
+          {error}
+        </Alert>
+      )}
 
-      <form onSubmit={onSubmit} className="grid grid-cols-1 gap-4">
-        <div>
-          <label className="block text-sm font-medium">Mata pelajaran *</label>
-          <select className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.subject_id} onChange={(e) => setForm({...form, subject_id: e.target.value})} required>
-            <option value="">Pilih mata pelajaran</option>
-            {subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </div>
+      {subjects.length === 0 && (
+        <Alert tone="amber" icon={AlertCircle} title="Belum ada mata pelajaran" className="mb-4">
+          Soal wajib terhubung ke mata pelajaran. Minta administrator menambahkannya
+          lebih dulu.
+        </Alert>
+      )}
 
-        <div>
-          <label className="block text-sm font-medium">Topik / Bab</label>
-          <input className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.topic} onChange={(e) => setForm({...form, topic: e.target.value})} placeholder="opsional" />
-        </div>
+      <form onSubmit={onSubmit} className="space-y-5" noValidate>
+        <Card>
+          <CardHeader
+            icon={BookOpen}
+            title="Informasi soal"
+            description="Mapel & topik memudahkan pencarian kembali di bank soal."
+          />
+          <div className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6">
+            <Field
+              label="Mata pelajaran"
+              htmlFor="subject_id"
+              required
+              error={showInvalid(!form.subject_id) ? 'Pilih mata pelajaran.' : undefined}
+            >
+              <Select
+                id="subject_id"
+                value={form.subject_id}
+                invalid={showInvalid(!form.subject_id)}
+                onChange={(e) => setForm({ ...form, subject_id: e.target.value })}
+              >
+                <option value="">Pilih mata pelajaran</option>
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
 
-        <div>
-          <label className="block text-sm font-medium">Pertanyaan *</label>
-          <textarea className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" rows={3}
-            value={form.question_text} onChange={(e) => setForm({...form, question_text: e.target.value})}
-            placeholder="Teks soal..." required />
-        </div>
+            <Field
+              label="Topik / bab"
+              htmlFor="topic"
+              hint="Opsional — contoh: Persamaan Kuadrat."
+            >
+              <TextInput
+                id="topic"
+                value={form.topic}
+                onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                placeholder="opsional"
+              />
+            </Field>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium">Bobot</label>
-            <input type="number" min={1} className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              value={form.weight} onChange={(e) => setForm({...form, weight: Number(e.target.value) || 1})} />
+            <Field
+              label="Pertanyaan"
+              htmlFor="question_text"
+              required
+              className="sm:col-span-2"
+              error={showInvalid(!form.question_text.trim()) ? 'Teks soal wajib diisi.' : undefined}
+            >
+              <Textarea
+                id="question_text"
+                rows={4}
+                value={form.question_text}
+                invalid={showInvalid(!form.question_text.trim())}
+                onChange={(e) => setForm({ ...form, question_text: e.target.value })}
+                placeholder="Tulis pertanyaan di sini…"
+              />
+            </Field>
+
+            <Field
+              label="Bobot soal"
+              htmlFor="weight"
+              error={showInvalid(form.weight < 1) ? 'Bobot minimal 1.' : undefined}
+              hint="Soal berbobot lebih besar menyumbang nilai lebih tinggi."
+            >
+              <TextInput
+                id="weight"
+                type="number"
+                min={1}
+                value={form.weight}
+                invalid={showInvalid(form.weight < 1)}
+                onChange={(e) =>
+                  setForm({ ...form, weight: Number(e.target.value) || 1 })
+                }
+              />
+            </Field>
           </div>
-          <label className="flex items-end gap-2 text-sm">
-            <span className="text-slate-500">Jawaban benar: {form.correct_option_order || '-'}</span>
-          </label>
-        </div>
+        </Card>
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Pilihan Jawaban *</span>
-            <button type="button" onClick={addOption} className="inline-flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-800"><Plus size={14} /> Tambah</button>
-          </div>
-          {form.options.map((o, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <span className="w-6 text-right text-sm font-medium">{String.fromCharCode(65 + i)}</span>
-              <input className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                value={o.text} onChange={(e) => setForm({...form, options: form.options.map((x, j)=>(j===i?{...x, text:e.target.value}:x))})} />
-              <input type="radio" name="correct" checked={o.is_correct} onChange={() => setCorrect(i + 1)} className="h-4 w-4 text-indigo-600" />
-              {form.options.length > 2 && (
-                <button type="button" onClick={() => removeOption(i)} className="rounded p-1 text-red-500 hover:bg-red-50"><Trash2 size={14} /></button>
+        <Card>
+          <CardHeader
+            icon={CircleCheck}
+            title="Pilihan jawaban"
+            description="Minimal dua pilihan. Tandai satu pilihan sebagai jawaban benar."
+            tone="green"
+            action={
+              <Badge tone="green" icon={Award}>
+                Jawaban benar: {correctLetter}
+              </Badge>
+            }
+          />
+          <div className="space-y-3 p-5 sm:p-6">
+            {form.options.map((o, i) => {
+              const empty = showInvalid(!o.text.trim());
+              return (
+                <div
+                  key={i}
+                  className={
+                    'flex flex-wrap items-center gap-2 rounded-lg border p-2 transition-colors ' +
+                    (o.is_correct
+                      ? 'border-emerald-300 bg-emerald-50/60'
+                      : 'border-slate-200 bg-white')
+                  }
+                >
+                  <span
+                    className="flex size-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm font-bold text-slate-600"
+                    aria-hidden="true"
+                  >
+                    {letter(i)}
+                  </span>
+                  <div className="min-w-[180px] flex-1">
+                    <label className="sr-only" htmlFor={`option-${i}`}>
+                      Pilihan {letter(i)}
+                    </label>
+                    <TextInput
+                      id={`option-${i}`}
+                      value={o.text}
+                      invalid={empty}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          options: f.options.map((x, j) =>
+                            j === i ? { ...x, text: e.target.value } : x
+                          ),
+                        }))
+                      }
+                      placeholder={`Teks pilihan ${letter(i)}`}
+                    />
+                  </div>
+
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={o.is_correct ? 'primary' : 'secondary'}
+                    icon={CircleCheck}
+                    onClick={() => setCorrect(i + 1)}
+                    aria-pressed={o.is_correct}
+                  >
+                    {o.is_correct ? 'Kunci' : 'Jadikan kunci'}
+                  </Button>
+
+                  {form.options.length > 2 && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      icon={Trash2}
+                      className="text-red-600 hover:bg-red-50"
+                      onClick={() => removeOption(i)}
+                      aria-label={`Hapus pilihan ${letter(i)}`}
+                    >
+                      Hapus
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                icon={Plus}
+                onClick={addOption}
+              >
+                Tambah pilihan
+              </Button>
+              {showInvalid(!form.correct_option_order) && (
+                <p className="hint-error mt-0">Pilih salah satu jawaban benar.</p>
               )}
             </div>
-          ))}
-        </div>
+          </div>
+        </Card>
 
-        <div className="flex justify-end">
-          <button type="submit" disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 font-medium text-white hover:bg-indigo-700 disabled:opacity-60">
-            <Save size={16} />{isEdit ? 'Perbarui' : 'Simpan'}</button>
+        <Alert tone="blue" icon={Info} title="Tentang kunci jawaban">
+          Kunci jawaban hanya tersimpan di server dan tidak pernah dikirim ke aplikasi
+          siswa. Menyimpan perubahan akan menulis ulang seluruh pilihan jawaban,
+          termasuk kuncinya.
+        </Alert>
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Link to="/questions" className="btn btn-ghost">
+            Batal
+          </Link>
+          <Button type="submit" loading={saving} icon={Save}>
+            {isEdit ? 'Simpan perubahan' : 'Simpan soal'}
+          </Button>
         </div>
       </form>
     </div>

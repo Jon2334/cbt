@@ -8,13 +8,43 @@
  * INSERT/UPDATE langsung ke tabel `exams`; RLS `teacher_exams_owned_or_assigned`
  * (FOR ALL) melindungi — hanya guru pembuat yang dapat menulis. Kolom
  * `created_by` di-set ke id profil otorisasi (bukan dipercaya dari input).
+ *
+ * Catatan keamanan & integritas:
+ * - `status` hanya dikirim saat INSERT. Saat UPDATE tidak dikirim, supaya
+ *   menyunting ujian yang sudah terbit tidak diam-diam menurunkannya ke draft.
+ * - Setelah ujian dibuat, pengguna langsung diarahkan ke halaman penyusunan soal
+ *   (langkah berikutnya) alih-alih kembali ke daftar.
  */
-import { useEffect, useState, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useState, useCallback, type FormEvent } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/auth';
 import type { Exam, Subject, ClassRecord } from '../../../types/cbt';
-import { Save, X } from 'lucide-react';
+import {
+  AlertCircle,
+  CalendarClock,
+  Clock,
+  Info,
+  Layers,
+  Save,
+  Target,
+  X,
+} from 'lucide-react';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Field,
+  LinkButton,
+  LoadingBlock,
+  PageHeader,
+  Select,
+  TextInput,
+  Textarea,
+  Toggle,
+} from '../../../components/ui';
 
 type FormValues = {
   title: string;
@@ -71,6 +101,7 @@ export default function ExamForm() {
   const [loading, setLoading] = useState<boolean>(id ? true : false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
 
   const loadDependencies = useCallback(async () => {
     const [{ data: s }, { data: c }] = await Promise.all([
@@ -112,8 +143,8 @@ export default function ExamForm() {
   }, [id]);
 
   useEffect(() => {
-    loadDependencies();
-    loadExam();
+    void loadDependencies();
+    void loadExam();
   }, [loadDependencies, loadExam]);
 
   const validate = (): string | null => {
@@ -128,11 +159,12 @@ export default function ExamForm() {
     return null;
   };
 
-  const onChange = (k: keyof FormValues, v: any) =>
+  const onChange = <K extends keyof FormValues>(k: K, v: FormValues[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
-  const onSubmit = async (e: React.FormEvent) => {
+  const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    setSubmitted(true);
     const v = validate();
     if (v) {
       setError(v);
@@ -158,234 +190,325 @@ export default function ExamForm() {
       shuffle_questions: form.shuffle_questions,
       shuffle_options: form.shuffle_options,
       show_results_after: form.show_results_after,
-      status: 'draft' as const,
+      ...(isEdit ? {} : { status: 'draft' as const }),
     };
 
-    let err: any;
     if (isEdit && id) {
-      const r = await supabase.from('exams').update(payload).eq('id', id);
-      err = r.error;
-    } else {
-      const r = await supabase.from('exams').insert([payload]);
-      err = r.error;
+      const { error: err } = await supabase.from('exams').update(payload).eq('id', id);
+      setSaving(false);
+      if (err) setError(err.message);
+      else navigate('/exams');
+      return;
     }
+
+    // INSERT mengembalikan id agar pengguna langsung dibawa ke langkah
+    // berikutnya: menambahkan soal ke ujian ini.
+    const { data, error: err } = await supabase
+      .from('exams')
+      .insert([payload])
+      .select('id')
+      .single();
     setSaving(false);
     if (err) {
       setError(err.message);
-    } else {
-      alert(isEdit ? 'Ujian diperbarui.' : 'Ujian dibuat.');
-      navigate('/exams');
+      return;
     }
+    const newId = (data as { id: string } | null)?.id;
+    navigate(newId ? `/exams/${newId}/questions` : '/exams');
   };
 
-  if (loading) return <div className="loading">Memuat…</div>;
+  const showInvalid = (v: boolean) => submitted && v;
+  const maxClose = form.open_at;
+
+  if (loading) {
+    return (
+      <Card>
+        <LoadingBlock label="Memuat data ujian…" />
+      </Card>
+    );
+  }
+
+  const missingMaster = subjects.length === 0 || classes.length === 0;
 
   return (
-    <div className="p-6">
-      <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">
-          {isEdit ? 'Edit Ujian' : 'Buat Ujian Baru'}
-        </h1>
-        <button
-          onClick={() => navigate('/exams')}
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1 text-sm hover:bg-slate-50"
-        >
-          <X size={16} /> Batal
-        </button>
-      </header>
+    <div className="animate-fade-in-up">
+      <PageHeader
+        icon={CalendarClock}
+        title={isEdit ? 'Edit Ujian' : 'Buat Ujian Baru'}
+        description="Tentukan peserta, jadwal, dan aturan pengerjaan. Soal ditambahkan setelah ujian disimpan."
+        breadcrumb={[
+          { label: 'Beranda', to: '/dashboard' },
+          { label: 'Ujian', to: '/exams' },
+          { label: isEdit ? 'Edit' : 'Baru' },
+        ]}
+        actions={
+          <LinkButton to="/exams" variant="secondary" icon={X}>
+            Batal
+          </LinkButton>
+        }
+      />
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+        <Alert tone="red" icon={AlertCircle} title="Data belum bisa disimpan" className="mb-4">
           {error}
-        </div>
+        </Alert>
       )}
 
-      <form
-        onSubmit={onSubmit}
-        className="grid max-w-3xl grid-cols-1 gap-4 md:grid-cols-2"
-      >
-        <div className="md:col-span-2">
-          <label className="block text-sm font-medium">Judul ujian *</label>
-          <input
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.title}
-            onChange={(e) => onChange('title', e.target.value)}
-            placeholder="Contoh: Ulangan Tengah Semester Matematika"
-            required
+      {missingMaster && (
+        <Alert tone="amber" icon={Info} title="Data dasar belum lengkap" className="mb-4">
+          {subjects.length === 0 && <p>Belum ada mata pelajaran.</p>}
+          {classes.length === 0 && <p>Belum ada kelas aktif.</p>}
+          <p className="mt-1">
+            Mata pelajaran dan kelas hanya bisa dibuat oleh administrator (menu
+            Pengaturan &amp; Peran → panduan SQL).
+          </p>
+        </Alert>
+      )}
+
+      <form onSubmit={onSubmit} className="space-y-5" noValidate>
+        <Card>
+          <CardHeader
+            icon={Layers}
+            title="Informasi dasar"
+            description="Nama ujian dilihat siswa pada aplikasi."
           />
-        </div>
+          <div className="space-y-4 p-5 sm:p-6">
+            <Field
+              label="Judul ujian"
+              htmlFor="title"
+              required
+              error={showInvalid(!form.title.trim()) ? 'Judul wajib diisi.' : undefined}
+              hint="Contoh: Ulangan Tengah Semester Matematika."
+            >
+              <TextInput
+                id="title"
+                value={form.title}
+                invalid={showInvalid(!form.title.trim())}
+                onChange={(e) => onChange('title', e.target.value)}
+                placeholder="Ulangan Tengah Semester Matematika"
+              />
+            </Field>
 
-        <div className="md:col-span-2">
-          <label className="block text-sm font-medium">Deskripsi</label>
-          <textarea
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.description}
-            onChange={(e) => onChange('description', e.target.value)}
-            placeholder="Deskripsi singkat (opsional)"
-            rows={3}
+            <Field
+              label="Deskripsi"
+              htmlFor="description"
+              hint="Opsional — tampil sebagai keterangan ujian."
+            >
+              <Textarea
+                id="description"
+                rows={3}
+                value={form.description}
+                onChange={(e) => onChange('description', e.target.value)}
+                placeholder="Deskripsi singkat (opsional)"
+              />
+            </Field>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader
+            icon={Target}
+            title="Peserta"
+            description="Menentukan soal mana yang boleh dipakai dan siapa yang bisa mengerjakan."
+            tone="green"
           />
-        </div>
+          <div className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6">
+            <Field
+              label="Mata pelajaran"
+              htmlFor="subject_id"
+              required
+              error={showInvalid(!form.subject_id) ? 'Pilih mata pelajaran.' : undefined}
+            >
+              <Select
+                id="subject_id"
+                value={form.subject_id}
+                invalid={showInvalid(!form.subject_id)}
+                onChange={(e) => onChange('subject_id', e.target.value)}
+              >
+                <option value="">Pilih mata pelajaran</option>
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
 
-        <div>
-          <label className="block text-sm font-medium">Mata pelajaran *</label>
-          <select
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.subject_id}
-            onChange={(e) => onChange('subject_id', e.target.value)}
-            required
-          >
-            <option value="">Pilih mata pelajaran</option>
-            {subjects.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </div>
+            <Field
+              label="Kelas"
+              htmlFor="class_id"
+              required
+              error={showInvalid(!form.class_id) ? 'Pilih kelas.' : undefined}
+              hint="Hanya siswa anggota kelas ini yang dapat mengerjakan."
+            >
+              <Select
+                id="class_id"
+                value={form.class_id}
+                invalid={showInvalid(!form.class_id)}
+                onChange={(e) => onChange('class_id', e.target.value)}
+              >
+                <option value="">Pilih kelas</option>
+                {classes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.grade_level ?? '-'})
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+        </Card>
 
-        <div>
-          <label className="block text-sm font-medium">Kelas *</label>
-          <select
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.class_id}
-            onChange={(e) => onChange('class_id', e.target.value)}
-            required
-          >
-            <option value="">Pilih kelas</option>
-            {classes.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.grade_level ?? '-'})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Mulai *</label>
-          <input
-            type="datetime-local"
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.open_at}
-            onChange={(e) => onChange('open_at', e.target.value)}
-            required
+        <Card>
+          <CardHeader
+            icon={Clock}
+            title="Jadwal & durasi"
+            description="Waktu mengikuti zona waktu perangkat Anda."
+            tone="amber"
           />
-        </div>
+          <div className="grid gap-4 p-5 sm:grid-cols-2 sm:p-6">
+            <Field
+              label="Dibuka"
+              htmlFor="open_at"
+              required
+              error={showInvalid(!form.open_at) ? 'Waktu buka wajib diisi.' : undefined}
+            >
+              <TextInput
+                id="open_at"
+                type="datetime-local"
+                value={form.open_at}
+                invalid={showInvalid(!form.open_at)}
+                onChange={(e) => onChange('open_at', e.target.value)}
+              />
+            </Field>
 
-        <div>
-          <label className="block text-sm font-medium">Tutup *</label>
-          <input
-            type="datetime-local"
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.close_at}
-            onChange={(e) => onChange('close_at', e.target.value)}
-            required
+            <Field
+              label="Ditutup"
+              htmlFor="close_at"
+              required
+              error={
+                showInvalid(!form.close_at)
+                  ? 'Waktu tutup wajib diisi.'
+                  : showInvalid(
+                        Boolean(form.open_at && form.close_at) &&
+                          new Date(form.close_at) <= new Date(form.open_at)
+                      )
+                    ? 'Waktu tutup harus setelah waktu buka.'
+                    : undefined
+              }
+              hint="Setelah waktu ini siswa tidak dapat mulai mengerjakan."
+            >
+              <TextInput
+                id="close_at"
+                type="datetime-local"
+                min={maxClose}
+                value={form.close_at}
+                invalid={
+                  showInvalid(
+                    !form.close_at ||
+                      (Boolean(form.open_at && form.close_at) &&
+                        new Date(form.close_at) <= new Date(form.open_at))
+                  )
+                }
+                onChange={(e) => onChange('close_at', e.target.value)}
+              />
+            </Field>
+
+            <Field
+              label="Durasi pengerjaan (menit)"
+              htmlFor="duration_minutes"
+              required
+              error={showInvalid(form.duration_minutes <= 0) ? 'Durasi minimal 1 menit.' : undefined}
+              hint="Dihitung sejak siswa mulai mengerjakan."
+            >
+              <TextInput
+                id="duration_minutes"
+                type="number"
+                min={1}
+                value={form.duration_minutes}
+                invalid={showInvalid(form.duration_minutes <= 0)}
+                onChange={(e) => onChange('duration_minutes', Number(e.target.value))}
+              />
+            </Field>
+
+            <Field
+              label="Kesempatan mengerjakan"
+              htmlFor="max_attempts"
+              error={showInvalid(form.max_attempts < 1) ? 'Minimal 1 kesempatan.' : undefined}
+              hint="Jumlah percobaan yang diizinkan untuk tiap siswa."
+            >
+              <TextInput
+                id="max_attempts"
+                type="number"
+                min={1}
+                value={form.max_attempts}
+                invalid={showInvalid(form.max_attempts < 1)}
+                onChange={(e) => onChange('max_attempts', Number(e.target.value))}
+              />
+            </Field>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader
+            icon={Layers}
+            title="Opsi pengerjaan"
+            description="Atur pengacakan dan tampilan nilai untuk siswa."
+            tone="purple"
           />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Durasi (menit) *</label>
-          <input
-            type="number"
-            min={1}
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.duration_minutes}
-            onChange={(e) =>
-              onChange('duration_minutes', Number(e.target.value))
-            }
-            required
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Kesempatan ulang</label>
-          <input
-            type="number"
-            min={1}
-            className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            value={form.max_attempts}
-            onChange={(e) => onChange('max_attempts', Number(e.target.value))}
-          />
-        </div>
-
-        <div className="flex items-end gap-6">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300"
+          <div className="grid gap-3 p-5 sm:grid-cols-3 sm:p-6">
+            <Toggle
+              id="shuffle_questions"
               checked={form.shuffle_questions}
-              onChange={(e) =>
-                onChange('shuffle_questions', e.target.checked)
-              }
+              onChange={(v) => onChange('shuffle_questions', v)}
+              label="Acak urutan soal"
+              hint="Setiap siswa mendapat urutan berbeda."
             />
-            Acak soal
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300"
+            <Toggle
+              id="shuffle_options"
               checked={form.shuffle_options}
-              onChange={(e) =>
-                onChange('shuffle_options', e.target.checked)
-              }
+              onChange={(v) => onChange('shuffle_options', v)}
+              label="Acak pilihan jawaban"
+              hint="Posisi A/B/C/D tidak tetap."
             />
-            Acak pilihan
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300"
+            <Toggle
+              id="show_results_after"
               checked={form.show_results_after}
-              onChange={(e) =>
-                onChange('show_results_after', e.target.checked)
-              }
+              onChange={(v) => onChange('show_results_after', v)}
+              label="Tampilkan hasil setelah selesai"
+              hint="Siswa melihat nilainya bila sudah dipublikasikan."
             />
-            Tampilkan hasil setelah selesai
-          </label>
-        </div>
+          </div>
+        </Card>
 
-        <div className="md:col-span-2 flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+        <Alert tone="blue" icon={Info} title="Alur penyusunan ujian">
+          <ol className="list-decimal space-y-1 pl-5">
+            <li>Simpan ujian (status awal: <strong>draft</strong>).</li>
+            <li>Tambahkan soal dari bank soal pada halaman berikutnya.</li>
+            <li>Terbitkan ujian di halaman <strong>Ujian</strong> agar siswa bisa mengerjakan.</li>
+          </ol>
+        </Alert>
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Link
+            to="/exams"
+            className="btn btn-ghost"
+            aria-label="Batal dan kembali ke daftar ujian"
           >
-            {saving ? (
-              <>
-                <svg
-                  className="-ml-1 h-4 w-4 animate-spin"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                  />
-                </svg>
-                <span>{isEdit ? 'Menyimpan…' : 'Membuat…'}</span>
-              </>
-            ) : (
-              <>
-                <Save size={16} />
-                <span>{isEdit ? 'Perbarui' : 'Simpan sebagai draft'}</span>
-              </>
-            )}
-          </button>
+            Batal
+          </Link>
+          <Button
+            type="submit"
+            loading={saving}
+            icon={Save}
+            disabled={missingMaster}
+          >
+            {isEdit ? 'Simpan perubahan' : 'Simpan & tambah soal'}
+          </Button>
+          {subjects.length > 0 && classes.length > 0 && (
+            <Badge tone="slate">Draft tersimpan otomatis saat disimpan</Badge>
+          )}
         </div>
       </form>
-      <p className="mt-4 text-xs text-slate-500">
-        * wajib diisi. Ujian disimpan sebagai draft; publikasi dilakukan di
-        halaman Kelola Ujian lalu tambahkan soal melalui Bank Soal.
-      </p>
     </div>
   );
 }
